@@ -1,4 +1,4 @@
-import { runResearch } from "@/lib/agent/graph";
+import { runResearch } from "@/lib/agent";
 import { NextRequest } from "next/server";
 
 export async function POST(req: NextRequest) {
