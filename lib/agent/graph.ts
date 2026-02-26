@@ -38,17 +38,34 @@ import {
 } from "./state";
 
 // ─────────────────────────────────────────────────────────────
-// LLM Client (Ollama — local Llama 3.2)
+// LLM Client (Ollama API)
 // ─────────────────────────────────────────────────────────────
 
-const ollama = new Ollama();
+const ollamaConfig: { host: string; fetch?: typeof fetch } = {
+  host: process.env.OLLAMA_HOST || "http://localhost:11434",
+};
+
+// Add API key authentication if provided
+if (process.env.OLLAMA_API_KEY) {
+  ollamaConfig.fetch = (url, options) => {
+    return fetch(url, {
+      ...options,
+      headers: {
+        ...options?.headers,
+        Authorization: `Bearer ${process.env.OLLAMA_API_KEY}`,
+      },
+    });
+  };
+}
+
+const ollama = new Ollama(ollamaConfig);
 
 async function chatComplete(
   systemPrompt: string,
   userMessage: string
 ): Promise<string> {
   const response = await ollama.chat({
-    model: "llama3.2",
+    model: process.env.OLLAMA_MODEL || "llama3.2",
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userMessage },
