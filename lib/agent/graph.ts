@@ -41,7 +41,7 @@ import {
 // LLM Client (Hugging Face Transformers — local inference)
 // ─────────────────────────────────────────────────────────────
 
-const MODEL_ID = process.env.HF_MODEL || "HuggingFaceTB/SmolLM2-1.7B-Instruct";
+const MODEL_ID = process.env.HF_MODEL || "HuggingFaceTB/SmolLM2-360M-Instruct";
 
 // Lazy-load the pipeline (downloads model on first use)
 let generatorPromise: Promise<TextGenerationPipeline> | null = null;
@@ -49,9 +49,7 @@ let generatorPromise: Promise<TextGenerationPipeline> | null = null;
 function getGenerator(): Promise<TextGenerationPipeline> {
   if (!generatorPromise) {
     console.log(`Loading model: ${MODEL_ID} (this may take a while on first run)...`);
-    generatorPromise = pipeline("text-generation", MODEL_ID, {
-      dtype: "q4", // Use quantized model for lower memory usage
-    }) as Promise<TextGenerationPipeline>;
+    generatorPromise = pipeline("text-generation", MODEL_ID) as Promise<TextGenerationPipeline>;
   }
   return generatorPromise;
 }
