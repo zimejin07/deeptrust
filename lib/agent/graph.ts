@@ -22,7 +22,7 @@
 
 import { StateGraph, END, START, interrupt } from "@langchain/langgraph";
 import { MemorySaver } from "@langchain/langgraph";
-import { Ollama } from "ollama";
+import { pipeline, TextGenerationPipeline } from "@huggingface/transformers";
 import { v4 as uuidv4 } from "uuid";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -38,40 +38,53 @@ import {
 } from "./state";
 
 // ─────────────────────────────────────────────────────────────
-// LLM Client (Ollama API)
+// LLM Client (Hugging Face Transformers — local inference)
 // ─────────────────────────────────────────────────────────────
 
-const ollamaConfig: { host: string; fetch?: typeof fetch } = {
-  host: process.env.OLLAMA_HOST || "http://localhost:11434",
-};
+const MODEL_ID = process.env.HF_MODEL || "HuggingFaceTB/SmolLM2-1.7B-Instruct";
 
-// Add API key authentication if provided
-if (process.env.OLLAMA_API_KEY) {
-  ollamaConfig.fetch = (url, options) => {
-    return fetch(url, {
-      ...options,
-      headers: {
-        ...options?.headers,
-        Authorization: `Bearer ${process.env.OLLAMA_API_KEY}`,
-      },
-    });
-  };
+// Lazy-load the pipeline (downloads model on first use)
+let generatorPromise: Promise<TextGenerationPipeline> | null = null;
+
+function getGenerator(): Promise<TextGenerationPipeline> {
+  if (!generatorPromise) {
+    console.log(`Loading model: ${MODEL_ID} (this may take a while on first run)...`);
+    generatorPromise = pipeline("text-generation", MODEL_ID, {
+      dtype: "q4", // Use quantized model for lower memory usage
+    }) as Promise<TextGenerationPipeline>;
+  }
+  return generatorPromise;
 }
-
-const ollama = new Ollama(ollamaConfig);
 
 async function chatComplete(
   systemPrompt: string,
   userMessage: string
 ): Promise<string> {
-  const response = await ollama.chat({
-    model: process.env.OLLAMA_MODEL || "llama3.2:latest",
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userMessage },
-    ],
+  const generator = await getGenerator();
+
+  // Format as chat messages for instruct models
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userMessage },
+  ];
+
+  const output = await generator(messages, {
+    max_new_tokens: 4096,
+    do_sample: true,
+    temperature: 0.7,
   });
-  return response.message.content;
+
+  // Extract generated text from the assistant response
+  const result = output[0] as { generated_text: Array<{ role: string; content: string }> };
+  const assistantMessage = result.generated_text.find(
+    (msg) => msg.role === "assistant"
+  );
+  
+  if (!assistantMessage) {
+    throw new Error("No assistant response generated");
+  }
+  
+  return assistantMessage.content;
 }
 
 // ─────────────────────────────────────────────────────────────
