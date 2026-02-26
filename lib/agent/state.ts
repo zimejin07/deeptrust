@@ -126,7 +126,7 @@ export const ResearchState = z.object({
   rejectionFeedback: z.string().nullable().default(null),
 
   /** How many times the plan has cycled through Thinker→Auditor. */
-  planRevisionCount: z.number().int().nonneg().default(0),
+  planRevisionCount: z.number().int().nonnegative().default(0),
 
   /** Safety ceiling — prevents runaway revision loops. */
   maxPlanRevisions: z.number().int().positive().default(5),
@@ -137,7 +137,7 @@ export const ResearchState = z.object({
 
   // ── Execution ────────────────────────────────────────────
   /** Index into `plan.steps` for the currently-executing step. */
-  currentStepIndex: z.number().int().nonneg().default(0),
+  currentStepIndex: z.number().int().nonnegative().default(0),
 
   /**
    * Whether the user has explicitly approved the plan.
