@@ -65,7 +65,7 @@ async function chatComplete(
   userMessage: string
 ): Promise<string> {
   const response = await ollama.chat({
-    model: process.env.OLLAMA_MODEL || "llama3.2",
+    model: process.env.OLLAMA_MODEL || "llama3.2:latest",
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userMessage },
