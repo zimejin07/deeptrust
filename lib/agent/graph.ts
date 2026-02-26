@@ -22,7 +22,7 @@
 
 import { StateGraph, END, START, interrupt } from "@langchain/langgraph";
 import { MemorySaver } from "@langchain/langgraph";
-import Anthropic from "@anthropic-ai/sdk"; // swap for Ollama client if preferred
+import { Ollama } from "ollama";
 import { v4 as uuidv4 } from "uuid";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -38,24 +38,23 @@ import {
 } from "./state";
 
 // ─────────────────────────────────────────────────────────────
-// LLM Client (swap for `ollama` package if using local Llama 3.2)
+// LLM Client (Ollama — local Llama 3.2)
 // ─────────────────────────────────────────────────────────────
 
-const llm = new Anthropic(); // reads ANTHROPIC_API_KEY from env
+const ollama = new Ollama();
 
 async function chatComplete(
   systemPrompt: string,
   userMessage: string
 ): Promise<string> {
-  const response = await llm.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 4096,
-    system: systemPrompt,
-    messages: [{ role: "user", content: userMessage }],
+  const response = await ollama.chat({
+    model: "llama3.2",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ],
   });
-  const block = response.content[0];
-  if (block.type !== "text") throw new Error("Unexpected non-text response");
-  return block.text;
+  return response.message.content;
 }
 
 // ─────────────────────────────────────────────────────────────
