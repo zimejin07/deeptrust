@@ -67,7 +67,7 @@ export const ResearchPlan = z.object({
   steps: z.array(ResearchStep).min(1).max(20),
   estimatedTokenBudget: z.number().int().positive(),
   createdAt: z.string().datetime(),
-  revision: z.number().int().nonneg().default(0),
+  revision: z.number().int().nonnegative().default(0),
 });
 export type ResearchPlan = z.infer<typeof ResearchPlan>;
 
