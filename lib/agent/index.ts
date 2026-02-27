@@ -23,7 +23,8 @@ export {
 } from "./state";
 
 // LLM client (for advanced usage)
-export { chatComplete } from "./llm";
+export { chatComplete, loadModel, getModelStatus, MODEL_ID } from "./llm";
+export type { ModelProgress, ProgressCallback } from "./llm";
 
 // Utilities
 export { extractJSON, loadPolicy } from "./utils";
