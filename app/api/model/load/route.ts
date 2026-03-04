@@ -1,6 +1,10 @@
-import { loadModel, getModelStatus, MODEL_ID } from "@/lib/agent/llm";
+import { loadModel, getModelStatus, MODELS } from "@/lib/agent/llm";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const modelId = searchParams.get("modelId") ?? undefined;
+  const dtype = searchParams.get("dtype") ?? undefined;
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -9,28 +13,41 @@ export async function GET() {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
 
-      // Check if already loaded
-      const status = getModelStatus();
-      if (status.status === "ready") {
-        send({ ...status, modelId: MODEL_ID });
+      const status = getModelStatus(modelId, dtype);
+      const requestedId = modelId ?? status.modelId;
+      const requestedDtype = dtype ?? status.dtype;
+      if (
+        status.status === "ready" &&
+        status.modelId === requestedId &&
+        status.dtype === requestedDtype
+      ) {
+        send({ ...status, models: MODELS });
         controller.close();
         return;
       }
 
-      // Send initial status
-      send({ status: "loading", progress: 0, message: "Starting model load...", modelId: MODEL_ID });
+      send({
+        status: "loading",
+        progress: 0,
+        message: "Starting model load...",
+        modelId: modelId ?? status.modelId,
+        dtype: dtype ?? status.dtype,
+        models: MODELS,
+      });
 
       try {
-        await loadModel((progress) => {
-          send({ ...progress, modelId: MODEL_ID });
+        await loadModel(modelId, dtype as "q4" | "fp16" | "fp32" | undefined, (progress) => {
+          send({ ...progress, models: MODELS });
         });
         controller.close();
       } catch (error) {
-        send({ 
-          status: "error", 
-          progress: 0, 
+        send({
+          status: "error",
+          progress: 0,
           message: error instanceof Error ? error.message : "Unknown error",
-          modelId: MODEL_ID
+          modelId: modelId ?? undefined,
+          dtype: dtype ?? undefined,
+          models: MODELS,
         });
         controller.close();
       }
@@ -48,5 +65,5 @@ export async function GET() {
 
 export async function POST() {
   const status = getModelStatus();
-  return Response.json({ ...status, modelId: MODEL_ID });
+  return Response.json({ ...status, models: MODELS });
 }

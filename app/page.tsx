@@ -7,8 +7,22 @@ interface ModelProgress {
   progress: number;
   file: string;
   message: string;
-  modelId: string;
+  modelId?: string;
+  dtype?: string;
 }
+
+interface ModelOption {
+  id: string;
+  label: string;
+  dtype?: "q4" | "fp16" | "fp32";
+  sizeNote?: string;
+}
+
+const DEFAULT_MODELS: ModelOption[] = [
+  { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (Q4)", dtype: "q4", sizeNote: "~388 MB" },
+  { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (FP16)", dtype: "fp16", sizeNote: "~725 MB" },
+  { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (full)", dtype: "fp32", sizeNote: "~1.45 GB" },
+];
 
 interface ResearchEvent {
   node: string;
@@ -36,27 +50,39 @@ export default function TestClient() {
   const [error, setError] = useState<string | null>(null);
   
   // Model loading state
-  const [modelStatus, setModelStatus] = useState<ModelProgress>({
+  const [modelStatus, setModelStatus] = useState<ModelProgress & { models?: ModelOption[] }>({
     status: "idle",
     progress: 0,
     file: "",
     message: "Model not loaded",
     modelId: "",
   });
+  const [selectedModelIndex, setSelectedModelIndex] = useState(0);
+  const models = modelStatus.models?.length ? modelStatus.models : DEFAULT_MODELS;
+  const selectedModel = models[selectedModelIndex] ?? null;
 
-  // Check model status on mount
+  // Check model status on mount (includes models list)
   useEffect(() => {
     fetch("/api/model/load", { method: "POST" })
       .then((res) => res.json())
-      .then((data) => setModelStatus(data))
+      .then((data) => {
+        setModelStatus(data);
+        if (data.models?.length && selectedModelIndex >= data.models.length) {
+          setSelectedModelIndex(0);
+        }
+      })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadModel = useCallback(async () => {
+    if (!selectedModel) return;
     setModelStatus((prev) => ({ ...prev, status: "loading", message: "Starting..." }));
 
     try {
-      const response = await fetch("/api/model/load");
+      const params = new URLSearchParams({ modelId: selectedModel.id });
+      if (selectedModel.dtype) params.set("dtype", selectedModel.dtype);
+      const response = await fetch(`/api/model/load?${params.toString()}`);
       const reader = response.body?.getReader();
       if (!reader) throw new Error("No response body");
 
@@ -74,7 +100,7 @@ export default function TestClient() {
         for (const line of lines) {
           if (line.startsWith("data: ")) {
             try {
-              const data = JSON.parse(line.slice(6)) as ModelProgress;
+              const data = JSON.parse(line.slice(6)) as ModelProgress & { models?: ModelOption[] };
               setModelStatus(data);
             } catch {
               // Ignore parse errors
@@ -89,7 +115,7 @@ export default function TestClient() {
         message: err instanceof Error ? err.message : "Failed to load model",
       }));
     }
-  }, []);
+  }, [selectedModel]);
 
   const runResearch = useCallback(async () => {
     setEvents([]);
@@ -142,7 +168,11 @@ export default function TestClient() {
     }
   }, [query]);
 
-  const isModelReady = modelStatus.status === "ready";
+  const isModelReady =
+    modelStatus.status === "ready" &&
+    selectedModel &&
+    modelStatus.modelId === selectedModel.id &&
+    modelStatus.dtype === selectedModel.dtype;
   const isModelLoading = modelStatus.status === "loading" || modelStatus.status === "downloading";
 
   return (
@@ -155,14 +185,16 @@ export default function TestClient() {
         <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-lg p-6">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="text-lg font-semibold">Model Status</h2>
+              <h2 className="text-lg font-semibold">Model</h2>
               <p className="text-sm text-zinc-500">
-                {modelStatus.modelId || "No model selected"}
+                {modelStatus.modelId && modelStatus.dtype
+                  ? `${modelStatus.modelId} (${modelStatus.dtype})`
+                  : modelStatus.modelId || "Select and load a model"}
               </p>
             </div>
             <div
               className={`px-3 py-1 rounded-full text-sm font-medium ${
-                modelStatus.status === "ready"
+                isModelReady
                   ? "bg-green-900/50 text-green-400"
                   : modelStatus.status === "error"
                   ? "bg-red-900/50 text-red-400"
@@ -171,13 +203,32 @@ export default function TestClient() {
                   : "bg-blue-900/50 text-blue-400"
               }`}
             >
-              {modelStatus.status === "ready" && "Ready"}
+              {isModelReady && "Ready"}
               {modelStatus.status === "error" && "Error"}
               {modelStatus.status === "idle" && "Not Loaded"}
               {modelStatus.status === "loading" && "Loading..."}
               {modelStatus.status === "downloading" && "Downloading..."}
             </div>
           </div>
+
+          {/* Model dropdown */}
+          {models.length > 0 && (
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-zinc-400 mb-2">Model variant</label>
+              <select
+                value={selectedModelIndex}
+                onChange={(e) => setSelectedModelIndex(Number(e.target.value))}
+                disabled={isModelLoading}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2.5 text-zinc-100 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {models.map((m, i) => (
+                  <option key={`${m.id}-${m.dtype ?? "default"}`} value={i}>
+                    {m.label} {m.sizeNote ? `— ${m.sizeNote}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Progress Bar */}
           {isModelLoading && (
