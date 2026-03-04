@@ -333,7 +333,10 @@ export default function TestClient() {
               <span className="text-sm text-zinc-400">
                 {status === "idle" && "Ready to run"}
                 {status === "loading" && "Starting research..."}
-                {status === "streaming" && `Receiving events... (${events.length} received)`}
+                {status === "streaming" &&
+                  (events.length <= 1
+                    ? `Running… (first step may take 1–2 min on slow devices) — ${events.length} event`
+                    : `Receiving events… (${events.length} received)`)}
                 {status === "complete" && `Complete! (${events.length} events)`}
                 {status === "error" && "Error occurred"}
               </span>
