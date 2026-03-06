@@ -544,6 +544,16 @@ while (true) {
 npm install
 ```
 
+### Build the LLM worker (required for local inference)
+
+Inference runs in a Node.js worker thread. Compile the worker once before using the app locally:
+
+```bash
+npm run build:worker
+```
+
+This writes `dist/llm/worker-entry.js` and `dist/llm/pipeline.js`. The production build runs this step automatically.
+
 ### Development
 
 ```bash
@@ -552,9 +562,23 @@ npm run dev
 
 Open http://localhost:3000. Click "Load Model" to download and initialize the LLM, then run research queries.
 
-### First Run
+If you see an error that the worker was not found, run `npm run build:worker` first.
 
-The first model load downloads weights to `.hf-cache/` (approximately 400MB for SmolLM2-360M). Subsequent loads are fast.
+### Production build
+
+```bash
+npm run build
+```
+
+This runs `build:worker` then builds the Next.js app with webpack. The app is served with:
+
+```bash
+npm run start
+```
+
+### First run
+
+The first model load downloads weights to `.hf-cache/` (approximately 400MB for SmolLM2-360M Q4). Subsequent loads are fast.
 
 ---
 
