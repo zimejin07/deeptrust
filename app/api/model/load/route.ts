@@ -41,7 +41,7 @@ export async function GET(request: Request) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
 
-      const status = getModelStatus(modelId, dtype);
+      const status = await getModelStatus(modelId, dtype);
       const requestedId = modelId ?? status.modelId;
       const requestedDtype = dtype ?? status.dtype;
       if (
@@ -49,7 +49,7 @@ export async function GET(request: Request) {
         status.modelId === requestedId &&
         status.dtype === requestedDtype
       ) {
-        send({ ...status, models: MODELS });
+        send({ ...status, models: status.models ?? MODELS });
         controller.close();
         return;
       }
@@ -60,12 +60,12 @@ export async function GET(request: Request) {
         message: "Starting model load...",
         modelId: modelId ?? status.modelId,
         dtype: dtype ?? status.dtype,
-        models: MODELS,
+        models: status.models ?? MODELS,
       });
 
       try {
         await loadModel(modelId, dtype as "q4" | "fp16" | "fp32" | undefined, (progress) => {
-          send({ ...progress, models: MODELS });
+          send({ ...progress, models: (progress as { models?: typeof MODELS }).models ?? MODELS });
         });
         controller.close();
       } catch (error) {
@@ -104,6 +104,6 @@ export async function POST() {
   }
 
   const { getModelStatus, MODELS } = await import("@/lib/agent/llm");
-  const status = getModelStatus();
-  return Response.json({ ...status, models: MODELS });
+  const status = await getModelStatus();
+  return Response.json({ ...status, models: status.models ?? MODELS });
 }

@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run build:worker && next build --webpack",
+    "build:worker": "tsc -p tsconfig.worker.json",
     "start": "next start",
     "lint": "eslint"
   },

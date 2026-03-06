@@ -1,28 +1,20 @@
 /**
- * LLM Client — Hugging Face Transformers (local inference)
+ * LLM Client — server-side inference via a worker thread
  *
- * Cache: HF stores downloaded model files in env.cacheDir. Default is project
- * root /.hf-cache. SmolLM2-360M-Instruct (full ONNX) is ~1.45 GB on disk.
- * Set HF_CACHE_DIR to use a different directory (e.g. outside the repo).
+ * Pipeline runs in lib/agent/llm/worker-entry (compiled to dist/llm). This module
+ * spawns the worker and proxies getModelStatus, loadModel, chatComplete so API routes
+ * and the agent keep the same API. Keeps the main Node process non-blocking.
  */
 
-import { pipeline, TextGenerationPipeline, env } from "@huggingface/transformers";
+import { Worker } from "node:worker_threads";
 import path from "node:path";
+import fs from "node:fs";
 
-// Persistent cache: absolute path so it's correct regardless of process cwd
-env.cacheDir =
-  process.env.HF_CACHE_DIR ||
-  path.join(process.cwd(), ".hf-cache");
+import type { ModelOption, ModelProgress } from "./pipeline";
 
+// Static list for API responses; worker also returns models in getStatus/load payloads
+export type { ModelOption, ModelProgress };
 export const MODEL_ID = process.env.HF_MODEL || "HuggingFaceTB/SmolLM2-360M-Instruct";
-
-/** Available models: quantized first to save disk and memory. Cache is per-model so switching keeps all. */
-export interface ModelOption {
-  id: string;
-  label: string;
-  dtype?: "q4" | "fp16" | "fp32";
-  sizeNote?: string;
-}
 
 export const MODELS: ModelOption[] = [
   { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (Q4)", dtype: "q4", sizeNote: "~388 MB" },
@@ -30,204 +22,78 @@ export const MODELS: ModelOption[] = [
   { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (full)", dtype: "fp32", sizeNote: "~1.45 GB" },
 ];
 
-// Model state (one active pipeline at a time; cache on disk is per-model and preserved)
-let currentModelId = MODELS[0].id;
-let currentDtype = MODELS[0].dtype;
-let generatorPromise: Promise<TextGenerationPipeline> | null = null;
-let isModelLoaded = false;
-let currentProgress = 0;
-let currentStatus = "idle";
-let currentFile = "";
-
-export interface ModelProgress {
-  status: "idle" | "loading" | "downloading" | "ready" | "error";
-  progress: number;
-  file: string;
-  message: string;
-  modelId?: string;
-  dtype?: string;
-}
-
-/** Status for the currently selected/loaded model. */
-export function getModelStatus(forModelId?: string, forDtype?: string): ModelProgress {
-  const isOther = forModelId !== undefined && (forModelId !== currentModelId || forDtype !== currentDtype);
-  if (isOther) {
-    return {
-      status: "idle",
-      progress: 0,
-      file: "",
-      message: "Model not loaded",
-      modelId: forModelId,
-      dtype: forDtype,
-    };
-  }
-  if (isModelLoaded) {
-    return {
-      status: "ready",
-      progress: 100,
-      file: "",
-      message: "Model ready",
-      modelId: currentModelId,
-      dtype: currentDtype,
-    };
-  }
-  if (generatorPromise) {
-    return {
-      status: currentStatus as ModelProgress["status"],
-      progress: currentProgress,
-      file: currentFile,
-      message: currentFile ? `Downloading ${currentFile}` : "Loading model...",
-      modelId: currentModelId,
-      dtype: currentDtype,
-    };
-  }
-  return {
-    status: "idle",
-    progress: 0,
-    file: "",
-    message: "Model not loaded",
-    modelId: currentModelId,
-    dtype: currentDtype,
-  };
-}
-
 export type ProgressCallback = (progress: ModelProgress) => void;
 
+let worker: Worker | null = null;
+const pending = new Map<
+  string,
+  { resolve: (v: unknown) => void; reject: (e: Error) => void; onProgress?: ProgressCallback }
+>();
+
+function getWorkerPath(): string {
+  return path.join(process.cwd(), "dist", "llm", "worker-entry.js");
+}
+
+function getWorker(): Worker {
+  if (worker) return worker;
+  const workerPath = getWorkerPath();
+  if (!fs.existsSync(workerPath)) {
+    throw new Error(
+      `LLM worker not found at ${workerPath}. Run "npm run build:worker" (or "npm run build") first.`
+    );
+  }
+  worker = new Worker(workerPath, {
+    stdout: true,
+    stderr: true,
+  });
+  worker.on("message", (msg: { id: string; type: string; payload: unknown }) => {
+    const entry = pending.get(msg.id);
+    if (!entry) return;
+    if (msg.type === "progress" && entry.onProgress) {
+      entry.onProgress(msg.payload as ModelProgress);
+      return;
+    }
+    pending.delete(msg.id);
+    if (msg.type === "resolve") entry.resolve(msg.payload);
+    else if (msg.type === "reject") entry.reject(new Error(String(msg.payload)));
+  });
+  worker.on("error", (err) => {
+    for (const [, entry] of pending) entry.reject(err);
+    pending.clear();
+  });
+  worker.on("exit", (code) => {
+    if (code !== 0) {
+      for (const [, entry] of pending) entry.reject(new Error(`Worker exited with code ${code}`));
+      pending.clear();
+    }
+    worker = null;
+  });
+  return worker;
+}
+
+function send<T>(type: string, payload: unknown, onProgress?: ProgressCallback): Promise<T> {
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return new Promise<T>((resolve, reject) => {
+    pending.set(id, { resolve: resolve as (v: unknown) => void, reject, onProgress });
+    getWorker().postMessage({ id, type, payload });
+  });
+}
+
+export type ModelStatusResponse = ModelProgress & { models: ModelOption[] };
+
+export function getModelStatus(forModelId?: string, forDtype?: string): Promise<ModelStatusResponse> {
+  return send<ModelStatusResponse>("getStatus", { modelId: forModelId, dtype: forDtype });
+}
+
+/** Resolves when the model is loaded; progress is reported via onProgress. */
 export function loadModel(
   modelId?: string,
   dtype?: ModelOption["dtype"],
   onProgress?: ProgressCallback
-): Promise<TextGenerationPipeline> {
-  const nextId = modelId ?? currentModelId;
-  const nextDtype = dtype ?? currentDtype;
-
-  if (nextId !== currentModelId || nextDtype !== currentDtype) {
-    generatorPromise = null;
-    isModelLoaded = false;
-    currentModelId = nextId;
-    currentDtype = nextDtype;
-    currentStatus = "idle";
-    currentProgress = 0;
-    currentFile = "";
-  }
-
-  if (generatorPromise) {
-    return generatorPromise;
-  }
-
-  console.log(`\n🔄 Loading model: ${currentModelId}${currentDtype ? ` (${currentDtype})` : ""}`);
-  console.log(`   Cache directory: ${env.cacheDir}\n`);
-
-  currentStatus = "loading";
-  const startTime = Date.now();
-
-  const pipelineOptions: Parameters<typeof pipeline>[2] = {
-    progress_callback: (progressData: {
-      status: string;
-      name?: string;
-      file?: string;
-      loaded?: number;
-      total?: number;
-      progress?: number;
-    }) => {
-      currentStatus = progressData.status === "progress" ? "downloading" : "loading";
-      currentFile = progressData.file || progressData.name || "";
-      currentProgress = Math.round(progressData.progress ?? 0);
-
-      const update: ModelProgress = {
-        status: currentStatus as ModelProgress["status"],
-        progress: currentProgress,
-        file: currentFile,
-        message: currentFile
-          ? `Downloading ${currentFile.split("/").pop()} (${currentProgress}%)`
-          : `${progressData.status}...`,
-        modelId: currentModelId,
-        dtype: currentDtype,
-      };
-
-      console.log(`   ${update.message}`);
-      onProgress?.(update);
-    },
-  };
-  if (currentDtype) {
-    (pipelineOptions as Record<string, unknown>).dtype = currentDtype;
-  }
-
-  const pipelinePromise = pipeline("text-generation", currentModelId, pipelineOptions);
-  generatorPromise = (pipelinePromise as Promise<TextGenerationPipeline>)
-    .then((gen) => {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`\n✅ Model loaded in ${elapsed}s\n`);
-      isModelLoaded = true;
-      currentStatus = "ready";
-      currentProgress = 100;
-      onProgress?.({
-        status: "ready",
-        progress: 100,
-        file: "",
-        message: "Model ready",
-        modelId: currentModelId,
-        dtype: currentDtype,
-      });
-      return gen;
-    })
-    .catch((err) => {
-      currentStatus = "error";
-      generatorPromise = null;
-      onProgress?.({
-        status: "error",
-        progress: 0,
-        file: "",
-        message: err.message,
-        modelId: currentModelId,
-        dtype: currentDtype,
-      });
-      throw err;
-    });
-
-  return generatorPromise;
+): Promise<ModelStatusResponse> {
+  return send<ModelStatusResponse>("load", { modelId, dtype }, onProgress);
 }
 
-function getGenerator(): Promise<TextGenerationPipeline> {
-  return loadModel();
+export async function chatComplete(systemPrompt: string, userMessage: string): Promise<string> {
+  return send<string>("chat", { systemPrompt, userMessage });
 }
-
-/**
- * Send a chat completion request to the local LLM.
- */
-export async function chatComplete(
-  systemPrompt: string,
-  userMessage: string
-): Promise<string> {
-  const generator = await getGenerator();
-
-  const messages = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage },
-  ];
-
-  const preview = userMessage.slice(0, 60).replace(/\n/g, " ");
-  console.log(`🤖 Generating response for: "${preview}..."`);
-  const startTime = Date.now();
-
-  const output = await generator(messages, {
-    max_new_tokens: 4096,
-    do_sample: true,
-    temperature: 0.7,
-  });
-
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-  const result = output[0] as { generated_text: Array<{ role: string; content: string }> };
-  const assistantMessage = result.generated_text.find(
-    (msg) => msg.role === "assistant"
-  );
-
-  if (!assistantMessage) {
-    throw new Error("No assistant response generated");
-  }
-
-  console.log(`✅ Generated ${assistantMessage.content.length} chars in ${elapsed}s`);
-  return assistantMessage.content;
-}
-
