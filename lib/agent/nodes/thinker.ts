@@ -9,6 +9,7 @@
 import { chatComplete } from "../llm";
 import { extractJSON } from "../utils";
 import { ResearchState, ResearchPlan, appendReasoning } from "../state";
+import { v4 as uuidv4 } from "uuid";
 
 const MAX_PLAN_ATTEMPTS = 3;
 
@@ -19,6 +20,57 @@ function formatZodErrors(issues: { path: unknown[]; message: string }[]): string
   return issues
     .map((i) => `  - ${i.path.map((p) => String(p)).join(".")}: ${i.message}`)
     .join("\n");
+}
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Normalize LLM output so it passes ResearchPlan: fix non-UUID step ids and
+ * missing rationales (small/local models often omit these).
+ */
+function normalizePlan(raw: Record<string, unknown>): Record<string, unknown> {
+  const steps = Array.isArray(raw.steps) ? raw.steps : [];
+  const normalizedSteps = steps.map((s: unknown, i: number) => {
+    const step = typeof s === "object" && s !== null ? (s as Record<string, unknown>) : {};
+    const id =
+      typeof step.id === "string" && UUID_REGEX.test(step.id) ? step.id : uuidv4();
+    const rationale =
+      typeof step.rationale === "string" && step.rationale.length > 0
+        ? step.rationale
+        : typeof step.input === "string"
+          ? step.input
+          : `Step ${i + 1}`;
+    return {
+      ...step,
+      id,
+      rationale,
+      input: typeof step.input === "string" ? step.input : "",
+      tool: step.tool ?? "web_search",
+    };
+  });
+
+  const createdAt =
+    typeof raw.createdAt === "string" && raw.createdAt.length > 0
+      ? raw.createdAt
+      : new Date().toISOString();
+  const estimatedTokenBudget =
+    typeof raw.estimatedTokenBudget === "number" && raw.estimatedTokenBudget > 0
+      ? raw.estimatedTokenBudget
+      : 2048;
+
+  const objective =
+    typeof raw.objective === "string" && raw.objective.trim().length > 0
+      ? raw.objective.trim()
+      : "Research objective";
+
+  return {
+    ...raw,
+    objective,
+    steps: normalizedSteps,
+    createdAt,
+    estimatedTokenBudget,
+  };
 }
 
 /**
@@ -86,8 +138,11 @@ Rules:
       continue;
     }
 
+    const normalized = normalizePlan(
+      typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {}
+    );
     const withRevision = {
-      ...(parsed as object),
+      ...normalized,
       revision: state.planRevisionCount,
     };
 
