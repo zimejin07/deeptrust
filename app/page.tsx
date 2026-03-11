@@ -140,6 +140,7 @@ export default function TestClient() {
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let hadError = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -154,6 +155,11 @@ export default function TestClient() {
             try {
               const event = JSON.parse(line) as ResearchEvent;
               setEvents((prev) => [...prev, event]);
+              if (event.node === "_error" || event.state?.status === "failed") {
+                setError((event.state?.errorMessage as string) ?? "Research failed");
+                setStatus("error");
+                hadError = true;
+              }
             } catch {
               console.warn("Failed to parse event:", line);
             }
@@ -161,7 +167,7 @@ export default function TestClient() {
         }
       }
 
-      setStatus("complete");
+      if (!hadError) setStatus("complete");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
       setStatus("error");
