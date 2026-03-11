@@ -15,9 +15,9 @@ const MAX_PLAN_ATTEMPTS = 3;
 /**
  * Format Zod errors for inclusion in the next prompt so the LLM can self-correct.
  */
-function formatZodErrors(issues: { path: (string | number)[]; message: string }[]): string {
+function formatZodErrors(issues: { path: unknown[]; message: string }[]): string {
   return issues
-    .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
+    .map((i) => `  - ${i.path.map((p) => String(p)).join(".")}: ${i.message}`)
     .join("\n");
 }
 
