@@ -10,7 +10,11 @@ env.cacheDir =
   process.env.HF_CACHE_DIR ||
   path.join(process.cwd(), ".hf-cache");
 
-export const MODEL_ID = process.env.HF_MODEL || "HuggingFaceTB/SmolLM2-360M-Instruct";
+// Default to a very small instruct model for low-spec machines.
+// If this model ID does not exist or you prefer another tiny model,
+// set HF_MODEL in your environment to override.
+export const MODEL_ID =
+  process.env.HF_MODEL || "HuggingFaceTB/SmolLM2-135M-Instruct";
 
 export interface ModelOption {
   id: string;
@@ -20,9 +24,30 @@ export interface ModelOption {
 }
 
 export const MODELS: ModelOption[] = [
-  { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (Q4)", dtype: "q4", sizeNote: "~388 MB" },
-  { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (FP16)", dtype: "fp16", sizeNote: "~725 MB" },
-  { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (full)", dtype: "fp32", sizeNote: "~1.45 GB" },
+  {
+    id: "HuggingFaceTB/SmolLM2-135M-Instruct",
+    label: "SmolLM2 135M (Q4, tiny)",
+    dtype: "q4",
+    sizeNote: "~150–200 MB (approx)",
+  },
+  {
+    id: "HuggingFaceTB/SmolLM2-360M-Instruct",
+    label: "SmolLM2 360M (Q4)",
+    dtype: "q4",
+    sizeNote: "~388 MB",
+  },
+  {
+    id: "HuggingFaceTB/SmolLM2-360M-Instruct",
+    label: "SmolLM2 360M (FP16)",
+    dtype: "fp16",
+    sizeNote: "~725 MB",
+  },
+  {
+    id: "HuggingFaceTB/SmolLM2-360M-Instruct",
+    label: "SmolLM2 360M (full)",
+    dtype: "fp32",
+    sizeNote: "~1.45 GB",
+  },
 ];
 
 let currentModelId = MODELS[0].id;
@@ -91,6 +116,7 @@ export function loadModel(
   dtype?: ModelOption["dtype"],
   onProgress?: ProgressCallback
 ): Promise<TextGenerationPipeline> {
+  console.log("[worker] loadModel called");
   const nextId = modelId ?? currentModelId;
   const nextDtype = dtype ?? currentDtype;
 
@@ -185,6 +211,7 @@ export async function chatComplete(
   systemPrompt: string,
   userMessage: string
 ): Promise<string> {
+  console.log("[worker] chatComplete called");
   const generator = await loadModel();
 
   const messages = [
@@ -197,7 +224,7 @@ export async function chatComplete(
   const startTime = Date.now();
 
   const output = await generator(messages, {
-    max_new_tokens: 4096,
+    max_new_tokens: 512,
     do_sample: true,
     temperature: 0.7,
   });

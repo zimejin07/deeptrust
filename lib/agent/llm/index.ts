@@ -14,12 +14,34 @@ import type { ModelOption, ModelProgress } from "./pipeline";
 
 // Static list for API responses; worker also returns models in getStatus/load payloads
 export type { ModelOption, ModelProgress };
-export const MODEL_ID = process.env.HF_MODEL || "HuggingFaceTB/SmolLM2-360M-Instruct";
+export const MODEL_ID =
+  process.env.HF_MODEL || "HuggingFaceTB/SmolLM2-135M-Instruct";
 
 export const MODELS: ModelOption[] = [
-  { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (Q4)", dtype: "q4", sizeNote: "~388 MB" },
-  { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (FP16)", dtype: "fp16", sizeNote: "~725 MB" },
-  { id: "HuggingFaceTB/SmolLM2-360M-Instruct", label: "SmolLM2 360M (full)", dtype: "fp32", sizeNote: "~1.45 GB" },
+  {
+    id: "HuggingFaceTB/SmolLM2-135M-Instruct",
+    label: "SmolLM2 135M (Q4, tiny)",
+    dtype: "q4",
+    sizeNote: "~150–200 MB (approx)",
+  },
+  {
+    id: "HuggingFaceTB/SmolLM2-360M-Instruct",
+    label: "SmolLM2 360M (Q4)",
+    dtype: "q4",
+    sizeNote: "~388 MB",
+  },
+  {
+    id: "HuggingFaceTB/SmolLM2-360M-Instruct",
+    label: "SmolLM2 360M (FP16)",
+    dtype: "fp16",
+    sizeNote: "~725 MB",
+  },
+  {
+    id: "HuggingFaceTB/SmolLM2-360M-Instruct",
+    label: "SmolLM2 360M (full)",
+    dtype: "fp32",
+    sizeNote: "~1.45 GB",
+  },
 ];
 
 export type ProgressCallback = (progress: ModelProgress) => void;
