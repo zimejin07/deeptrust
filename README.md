@@ -589,10 +589,20 @@ Create `.env.local` from `.env.example`:
 ```bash
 # Model selection
 HF_MODEL=HuggingFaceTB/SmolLM2-360M-Instruct
-
-# Cache directory (persists across restarts)
 HF_CACHE_DIR=./.hf-cache
 ```
+
+### Observability (LangSmith)
+
+To make agent behavior observable and debug failures (e.g. thinker returning invalid JSON), use [LangSmith](https://smith.langchain.com/). Set in `.env.local`:
+
+```bash
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your-langsmith-api-key
+LANGCHAIN_PROJECT=deeptrust
+```
+
+With tracing enabled, every graph run is recorded. You can inspect prompts, raw LLM outputs, and state transitions in the LangSmith UI, which helps diagnose schema validation errors and long-running or looping runs.
 
 ### Available Models
 

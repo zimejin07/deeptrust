@@ -7,32 +7,41 @@ export async function POST(req: NextRequest) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      // Send immediately so the UI shows activity. The first graph event
-      // only arrives after the thinker node finishes (one full LLM call),
-      // which can take 1–3+ minutes on a slow machine.
-      controller.enqueue(
-        encoder.encode(
-          JSON.stringify({
-            node: "_start",
-            state: {
-              status: "started",
-              plan: { objective: "Starting…", steps: [] },
-              reasoning: [
-                {
-                  node: "_start",
-                  summary:
-                    "Research started. First step (planning) may take 1–2 minutes on slower devices.",
-                },
-              ],
-            },
-          }) + "\n"
-        )
-      );
-
-      for await (const event of runResearch(query)) {
+      const send = (event: { node: string; state: Record<string, unknown> }) => {
         controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+      };
+
+      send({
+        node: "_start",
+        state: {
+          status: "started",
+          plan: { objective: "Starting…", steps: [] },
+          reasoning: [
+            {
+              node: "_start",
+              summary:
+                "Research started. First step (planning) may take 1–2 minutes on slower devices.",
+            },
+          ],
+        },
+      });
+
+      try {
+        for await (const event of runResearch(query)) {
+          send(event);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        send({
+          node: "_error",
+          state: {
+            status: "failed",
+            errorMessage: message,
+          },
+        });
+      } finally {
+        controller.close();
       }
-      controller.close();
     },
   });
 
@@ -40,7 +49,7 @@ export async function POST(req: NextRequest) {
     headers: {
       "Content-Type": "application/x-ndjson",
       "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
+      Connection: "keep-alive",
     },
   });
 }
