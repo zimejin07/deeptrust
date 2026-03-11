@@ -116,7 +116,6 @@ export function loadModel(
   dtype?: ModelOption["dtype"],
   onProgress?: ProgressCallback
 ): Promise<TextGenerationPipeline> {
-  console.log("[worker] loadModel called");
   const nextId = modelId ?? currentModelId;
   const nextDtype = dtype ?? currentDtype;
 
@@ -211,7 +210,6 @@ export async function chatComplete(
   systemPrompt: string,
   userMessage: string
 ): Promise<string> {
-  console.log("[worker] chatComplete called");
   const generator = await loadModel();
 
   const messages = [
@@ -224,7 +222,7 @@ export async function chatComplete(
   const startTime = Date.now();
 
   const output = await generator(messages, {
-    max_new_tokens: 512,
+    max_new_tokens: 4096,
     do_sample: true,
     temperature: 0.7,
   });
