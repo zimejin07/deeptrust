@@ -169,6 +169,50 @@ Rules:
     lastParseError = formatZodErrors(result.error.issues);
   }
 
+  // Fallback: if the model failed to produce valid JSON after all attempts,
+  // synthesize a minimal but valid single-step plan directly from the user query
+  // so the run can still proceed instead of hard-failing.
+  const fallbackPlanResult = ResearchPlan.safeParse({
+    objective:
+      typeof state.userQuery === "string" && state.userQuery.trim().length > 0
+        ? state.userQuery.trim()
+        : "Research objective",
+    steps: [
+      {
+        id: uuidv4(),
+        tool: "web_search",
+        input:
+          typeof state.userQuery === "string" && state.userQuery.trim().length > 0
+            ? state.userQuery.trim()
+            : "Initial research query",
+        rationale:
+          typeof lastRawThought === "string" && lastRawThought.trim().length > 0
+            ? lastRawThought.slice(0, 500)
+            : "Initial search to understand the question.",
+      },
+    ],
+    estimatedTokenBudget: 2048,
+    createdAt: new Date().toISOString(),
+    revision: state.planRevisionCount,
+  });
+
+  if (fallbackPlanResult.success) {
+    const plan = fallbackPlanResult.data;
+    const reasoning = appendReasoning(state, {
+      node: "thinker",
+      summary: `Fallback plan created after ${MAX_PLAN_ATTEMPTS} failed JSON attempts: ${plan.steps.length} step for "${plan.objective}"`,
+      rawThought: lastRawThought ?? undefined,
+    });
+
+    return {
+      plan,
+      status: "thinking",
+      rejectionFeedback: null,
+      reasoning,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   throw new Error(
     `Thinker failed to produce a valid plan after ${MAX_PLAN_ATTEMPTS} attempts. Last validation errors:\n${lastParseError ?? "unknown"}\n\nLast output (excerpt): ${(lastRawThought ?? "").slice(0, 400)}`
   );
