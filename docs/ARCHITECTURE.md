@@ -8,36 +8,40 @@ DeepTrust is a research automation system that orchestrates an LLM through a mul
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              FRONTEND                                       │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
-│  │ Model Load  │  │ Query Input │  │ Event Stream│  │ Report View │        │
-│  │   Status    │  │             │  │   Display   │  │             │        │
-│  └──────┬──────┘  └──────┬──────┘  └──────▲──────┘  └─────────────┘        │
-└─────────┼────────────────┼────────────────┼────────────────────────────────┘
-          │                │                │
-          ▼                ▼                │
+│                         FRONTEND (app/page.tsx)                             │
+│  ┌─────────────┐  ┌─────────────────────────────────────────────────────┐  │
+│  │ Model Card  │  │  Chat + Context panel                                 │  │
+│  │ (SSE load)  │  │  • Messages (user / assistant with word-by-word)    │  │
+│  └──────┬──────┘  │  • Knowledge drop zone (files, URLs, notes)          │  │
+│         │         │  • Quick-action chips, preview prompts               │  │
+│         │         │  • Reasoning trace (node summaries)                   │  │
+│         │         └──────────────────────────┬──────────────────────────┘  │
+└─────────┼───────────────────────────────────┼─────────────────────────────┘
+          │                                     │
+          ▼                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              API LAYER                                      │
 │  ┌─────────────────────┐  ┌─────────────────────────────────────┐          │
-│  │ GET /api/model/load │  │ POST /api/research                  │          │
-│  │ (SSE progress)      │  │ (NDJSON streaming)                  │          │
-│  └─────────┬───────────┘  └─────────────────┬───────────────────┘          │
-└────────────┼────────────────────────────────┼──────────────────────────────┘
-             │                                │
-             ▼                                ▼
+│  │ GET/POST             │  │ POST /api/research                   │          │
+│  │ /api/model/load      │  │ (SSE: event + data per research step)│          │
+│  │ (SSE progress)       │  └─────────────────┬───────────────────┘          │
+│  └─────────┬───────────┘                      │                             │
+└────────────┼─────────────────────────────────┼─────────────────────────────┘
+             │                                 │
+             ▼                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              AGENT CORE                                     │
+│                              AGENT CORE (lib/agent)                         │
 │  ┌─────────────────┐  ┌─────────────────────────────────────────────────┐  │
-│  │   LLM Client    │  │              StateGraph                         │  │
-│  │  (HF Transforms)│  │  ┌─────────┐  ┌─────────┐  ┌──────────────┐    │  │
-│  │                 │◄─┼──│ Thinker │──│ Auditor │──│ Tool Executor│    │  │
-│  │  - loadModel()  │  │  └────▲────┘  └────┬────┘  └──────┬───────┘    │  │
-│  │  - chatComplete()│ │       │            │               │            │  │
-│  └─────────────────┘  │       └────────────┘               ▼            │  │
-│                       │                            ┌───────────────┐    │  │
-│                       │                            │  Synthesizer  │    │  │
-│                       │                            └───────────────┘    │  │
-│                       └─────────────────────────────────────────────────┘  │
+│  │   LLM Client     │  │              StateGraph                         │  │
+│  │ (worker thread)  │  │  ┌─────────┐  ┌─────────┐  ┌──────────────┐    │  │
+│  │  loadModel()     │  │  │ Thinker │──│ Auditor │──│ Tool Executor │    │  │
+│  │  chatComplete()  │◄─┼──└────▲────┘  └────┬────┘  └──────┬───────┘    │  │
+│  └─────────────────┘  │       │            │               │            │  │
+│                        │       └────────────┘               ▼            │  │
+│                        │                        ┌───────────────┐       │  │
+│                        │                        │  Synthesizer  │       │  │
+│                        │                        └───────────────┘       │  │
+│                        └─────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -323,39 +327,83 @@ pipeline("text-generation", MODEL_ID, {
 
 ## API Design
 
-### Streaming Protocol
+### Research Streaming: Server-Sent Events (SSE)
 
-Research results stream as newline-delimited JSON (NDJSON):
+Research results are streamed as **Server-Sent Events** so the client can distinguish event types and get low-latency, non-blocking updates. The response uses `Content-Type: text/event-stream` and each message has an `event` name plus a `data` payload (JSON).
+
+**Why SSE (not NDJSON):** Standard SSE gives a single, well-understood protocol for streaming; event names (`start`, `research`, `error`) allow the client to handle each kind of message without guessing. Proxies and browsers handle SSE well, and we can add `ping`/`heartbeat` later without changing the wire format.
+
+**Wire format:**
 
 ```
-{"node":"thinker","state":{"status":"thinking","plan":{...}}}\n
-{"node":"auditor","state":{"status":"awaiting_approval","auditResult":{...}}}\n
-{"node":"synthesizer","state":{"status":"complete","finalReport":"..."}}\n
+event: start
+data: {"node":"_start","state":{"status":"started","plan":{...},"reasoning":[...]}}
+
+event: research
+data: {"node":"thinker","state":{"status":"thinking","plan":{...}}}
+
+event: research
+data: {"node":"auditor","state":{"status":"awaiting_approval","auditResult":{...}}}
+
+event: research
+data: {"node":"synthesizer","state":{"status":"complete","finalReport":"..."}}
+
+event: error
+data: {"node":"_error","state":{"status":"failed","errorMessage":"..."}}
 ```
 
-Client-side parsing:
+**Server (route):** The route encodes each event with `event: <name>\ndata: <JSON>\n\n` and enqueues into a `ReadableStream`, then closes the stream when the graph run finishes or throws.
 
-```typescript
-const lines = buffer.split("\n");
-for (const line of lines) {
-  if (line.trim()) {
-    const event = JSON.parse(line);
-    // Process event
-  }
-}
-```
+**Client:** The client reads the response body with `getReader()`, accumulates chunks, splits on `\n\n` to get full SSE messages, then for each message parses the `event:` line and the `data:` line (JSON). Events of type `research` (and `start`) are appended to the events list; the last event carrying `finalReport` is used to drive the word-by-word streaming animation in the chat.
 
 ### Model Loading Protocol
 
-Uses Server-Sent Events (SSE) for download progress:
+Model load also uses SSE for download progress:
 
 ```
 data: {"status":"downloading","progress":25,"file":"model.onnx"}\n\n
 data: {"status":"downloading","progress":50,"file":"model.onnx"}\n\n
-data: {"status":"ready","progress":100}\n\n
+data: {"status":"ready","progress":100,"modelId":"...","dtype":"q4"}\n\n
 ```
 
-SSE format requires `data: ` prefix and double newline suffix.
+SSE format: `data: ` prefix, JSON body, double newline (`\n\n`) between events.
+
+## Frontend Architecture
+
+The workspace (`app/page.tsx`) is built for a Cursor/Gemini-like flow: immediate feedback, non-blocking streaming, and clear separation between chat, context, and observability.
+
+### Layout and Responsibilities
+
+| Area | Purpose |
+|------|--------|
+| **Chat** | User messages and assistant replies. Assistant messages show a shimmer placeholder while waiting, then the final report is revealed word-by-word for a live-conversation feel. |
+| **Context panel** | Knowledge drop zone: drag-and-drop files (PDF, text, etc.) or add URLs/notes. Items are listed and sent as `knowledge` in the research request for future agent use. |
+| **Model card** | Model selection, load/progress, status pill (Ready / Loading / Error). Uses the same SSE pattern as model load API. |
+| **Reasoning trace** | Scrollable list of the latest reasoning summaries per node so you can follow the graph’s flow while the chat shows the final answer. |
+
+### Optimistic UI and Streaming Flow
+
+1. **On submit:** The client immediately appends a user message and an assistant placeholder (with shimmer) to the chat and sets `isStreaming = true`. No wait for the first byte.
+2. **SSE consumption:** `POST /api/research` is read with `response.body.getReader()`. Chunks are decoded and split on `\n\n`. Each SSE message is parsed for `event:` and `data:`; `start` and `research` events are appended to the events list.
+3. **Final report:** When an event contains `state.finalReport`, that text is stored and a word-by-word animation is started for the latest assistant message: a timer (e.g. every 40ms) reveals the next word until the full report is shown, then `isStreaming` is cleared.
+4. **Abort/cleanup:** A ref holds an `AbortController` for the in-flight request; starting a new run aborts the previous one and clears the streaming timer so only one “live” reply runs at a time.
+
+### Knowledge / Context Flow
+
+- **Drop zone:** Accepts drag-and-drop files and paste/drop of URLs (`text/uri-list` or plain text). Files and URLs are turned into `KnowledgeItem` entries (id, type, label, optional meta).
+- **Request payload:** The research request sends `{ query, knowledge: knowledgeItems }`. The backend currently uses only `query`; `knowledge` is reserved for future use (e.g. RAG, plan conditioning).
+- **UI copy:** The panel explains that added context can be used to ground answers; when the agent supports it, no frontend change is required beyond the existing payload.
+
+### Quick Actions and Starter Cards
+
+- **Quick-action chips** below the input (e.g. “Help me learn this topic”, “Summarize these docs”) set or extend the query and optionally trigger a run, similar to Gemini suggestion chips.
+- **Starter cards** in the empty state show example prompts (e.g. “How does Gemini Pro work…”) and populate the input or start a run when clicked, so the app feels ready to use without typing.
+
+### Why This Structure
+
+- **Single page:** All controls (model, context, chat, trace) stay on one screen to reduce context switching and match a “flow state” tool.
+- **SSE end-to-end:** Both research and model load use SSE so the client has one mental model: stream events, parse by type, update UI.
+- **Word-by-word:** The synthesizer returns the full report in one event; animating it word-by-word on the client gives a streaming feel without changing the backend contract.
 
 ## File Organization
 

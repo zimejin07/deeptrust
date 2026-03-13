@@ -1,10 +1,10 @@
 # DeepTrust Research Agent
 
-A TypeScript implementation of an autonomous research agent built with LangGraph state machines, local LLM inference via Hugging Face Transformers, and a Next.js frontend. This project demonstrates how to build a multi-node agent workflow with human-in-the-loop (HITL) checkpoints, policy-based auditing, and streaming state updates.
+A TypeScript implementation of an autonomous research agent: LangGraph state machines, local LLM inference (Hugging Face Transformers in a worker thread), and a real-time, AI-centric Next.js workspace. The UI is designed for a Cursor/Gemini-like flow—immediate feedback, Server-Sent Events (SSE) streaming, optimistic updates, a knowledge/context drop zone, and quick-action chips—so the full application from graph nodes to the browser is understandable in one read.
 
 ## Documentation
 
-For a deeper dive into the system design, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — Low-level design: state machine, channels, routing, LLM layer, API protocols, and frontend architecture (SSE, streaming UX, knowledge flow).
 
 ## Table of Contents
 
@@ -16,7 +16,7 @@ For a deeper dive into the system design, see [docs/ARCHITECTURE.md](docs/ARCHIT
 6. [Routing and Conditional Edges](#routing-and-conditional-edges)
 7. [LLM Integration](#llm-integration)
 8. [API Layer](#api-layer)
-9. [Frontend Client](#frontend-client)
+9. [Frontend: Real-Time Workspace](#frontend-real-time-workspace)
 10. [Running the Project](#running-the-project)
 11. [Configuration](#configuration)
 
@@ -84,7 +84,9 @@ lib/agent/
 ├── state.ts           # Zod schemas and TypeScript types
 ├── routing.ts         # Conditional edge functions
 ├── llm/
-│   └── index.ts       # Hugging Face Transformers client
+│   ├── index.ts       # Worker proxy: loadModel, chatComplete, getModelStatus
+│   ├── pipeline.ts    # Pipeline config (used by worker)
+│   └── worker-entry.ts # Worker entry: runs Transformers in a separate thread
 ├── nodes/
 │   ├── index.ts       # Node exports
 │   ├── thinker.ts     # Plan generation node
@@ -97,14 +99,20 @@ lib/agent/
     ├── extract-json.ts # Robust JSON parsing
     └── policy.ts      # Policy file loader
 
+dist/llm/              # Built by npm run build:worker
+├── worker-entry.js    # Compiled worker
+└── pipeline.js        # Pipeline bundle
+
 app/
-├── page.tsx           # Test client UI
+├── page.tsx           # Workspace UI: chat, context panel, model card, SSE client
+├── layout.tsx
+├── globals.css
 └── api/
     ├── research/
-    │   └── route.ts   # Research streaming endpoint
+    │   └── route.ts   # POST: SSE stream of research events
     └── model/
         └── load/
-            └── route.ts # Model loading with progress
+            └── route.ts # GET/POST: model load + SSE progress
 ```
 
 ---
@@ -441,93 +449,77 @@ export function extractJSON(text: string): unknown {
 
 ## API Layer
 
-### Research Endpoint
+### Research Endpoint (SSE)
 
-`POST /api/research` streams state updates via newline-delimited JSON:
+`POST /api/research` streams research state updates as **Server-Sent Events** so the client can show progress immediately and parse events by type. Using SSE (instead of raw NDJSON) gives a standard, well-supported streaming protocol and allows future event names (e.g. `ping`, `heartbeat`) without changing the wire format.
+
+**Request body:** `{ "query": string, "knowledge"?: Array<{ id, type, label, meta? }> }`. The `knowledge` array is sent by the workspace when the user adds files, URLs, or notes in the Context panel; the backend currently uses only `query` and may later use `knowledge` for RAG or plan conditioning.
+
+**Response:** `Content-Type: text/event-stream`. Each message is an SSE message:
+
+- `event: start` — First event; signals that the run has started (enables optimistic UI).
+- `event: research` — One per graph node update; `data` is `{ node, state }`.
+- `event: error` — On exception; `data` includes `node: "_error"` and `state.errorMessage`.
 
 ```typescript
-export async function POST(req: NextRequest) {
-  const { query } = await req.json();
-
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      for await (const event of runResearch(query)) {
-        controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
-      }
-      controller.close();
-    },
-  });
-
-  return new Response(stream, {
-    headers: { "Content-Type": "text/event-stream" },
-  });
+// Server: send helper
+const send = (event: string, payload: { node: string; state: Record<string, unknown> }) => {
+  controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`));
+};
+send("start", { node: "_start", state: { status: "started", ... } });
+for await (const event of runResearch(query)) {
+  send("research", event);
 }
+// On catch: send("error", { node: "_error", state: { status: "failed", errorMessage } });
 ```
 
 ### Model Loading Endpoint
 
-`GET /api/model/load` streams download progress via Server-Sent Events:
-
-```typescript
-export async function GET() {
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (data: object) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-      };
-
-      await loadModel((progress) => send(progress));
-      controller.close();
-    },
-  });
-
-  return new Response(stream, {
-    headers: { "Content-Type": "text/event-stream" },
-  });
-}
-```
+`GET /api/model/load?...modelId=...&dtype=...` (or POST with same query) streams download/load progress via SSE. The client parses `data: {...}` lines to drive the progress bar and status pill. See [Frontend: Real-Time Workspace](#frontend-real-time-workspace) for how the UI consumes these streams.
 
 ---
 
-## Frontend Client
+## Frontend: Real-Time Workspace
 
-The React client (`app/page.tsx`) provides:
+The React client (`app/page.tsx`) is a single-page workspace that mirrors a Cursor/Gemini-style flow: immediate, non-blocking feedback, streaming AI responses, and a dedicated context/knowledge area.
 
-1. **Model loading UI** with progress bar
-2. **Query input** with pre-built test queries
-3. **Streaming event display** showing node transitions
-4. **Final report rendering**
+### What the UI Provides
 
-### Streaming Pattern
+| Area | Purpose |
+|------|--------|
+| **Chat** | User messages and assistant replies. When a run finishes, the final report is streamed **word-by-word** into the last assistant message to mimic a live conversation. |
+| **Context / Knowledge** | Drag-and-drop zone for PDFs, text files, or URLs; optional fields to add URLs and short notes. Stored in React state and sent as `knowledge` with each research request for future backend use. |
+| **Quick-action chips** | A row of buttons below the input (e.g. “Help me learn this topic”, “Summarize these docs”) that set or extend the query and trigger a run—Gemini-style shortcuts. |
+| **Starter cards** | Empty state with example prompts (e.g. “How does Gemini Pro work…”) that fill the input and can be run in one click. |
+| **Model card** | Compact panel for model selection, load/progress, and status (Ready / Loading / Error). |
+| **Reasoning trace** | Scrollable list of the latest reasoning entries from the event stream (node + summary) for observability. |
+
+### Optimistic UI and Shimmer
+
+- On “Run Research”, the UI immediately appends the user message and a placeholder assistant message with a shimmer skeleton, then consumes SSE and updates that message when the final report arrives.
+- Shimmer and loading states use Tailwind (e.g. `animate-pulse`, neutral backgrounds) so the interface feels responsive even when the agent is still planning or executing.
+
+### SSE Consumption (Research)
+
+The client uses `EventSource`-style parsing on the `ReadableStream`: split by `\n\n`, then for each line look for `event:` and `data:` and dispatch by event type. Accumulated `research` events update both the reasoning trace and the chat when `finalReport` is present.
 
 ```typescript
-const response = await fetch("/api/research", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ query }),
-});
-
-const reader = response.body.getReader();
-const decoder = new TextDecoder();
-let buffer = "";
-
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-
-  buffer += decoder.decode(value, { stream: true });
-  const lines = buffer.split("\n");
-  buffer = lines.pop() || "";
-
-  for (const line of lines) {
-    if (line.trim()) {
-      const event = JSON.parse(line);
-      setEvents((prev) => [...prev, event]);
-    }
+// Conceptual: read stream, split by double newline, parse "event:" and "data:"
+const chunks = buffer.split("\n\n");
+for (const chunk of chunks) {
+  const eventMatch = chunk.match(/event:\s*(\w+)/);
+  const dataMatch = chunk.match(/data:\s*(\{[\s\S]*\})/);
+  if (eventMatch && dataMatch) {
+    const payload = JSON.parse(dataMatch[1]);
+    if (eventMatch[1] === "research") setEvents((prev) => [...prev, payload]);
+    // ... handle start, error; when payload.state.finalReport exists, run word-by-word animation
   }
 }
 ```
+
+### Word-by-Word Streaming
+
+When an event contains `state.finalReport`, the full text is not dumped at once. A small timer (e.g. every 40ms) reveals the report word-by-word in the last assistant message and clears the “streaming” state when done. This keeps the same SSE event payload while making the reply feel live.
 
 ---
 
