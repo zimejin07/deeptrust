@@ -5,13 +5,19 @@ export async function POST(req: NextRequest) {
   const { query } = await req.json();
 
   const encoder = new TextEncoder();
+
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: { node: string; state: Record<string, unknown> }) => {
-        controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+      const send = (
+        event: string,
+        payload: { node: string; state: Record<string, unknown> }
+      ) => {
+        const data = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+        controller.enqueue(encoder.encode(data));
       };
 
-      send({
+      // Initial "cursor-like" optimistic event
+      send("start", {
         node: "_start",
         state: {
           status: "started",
@@ -28,11 +34,11 @@ export async function POST(req: NextRequest) {
 
       try {
         for await (const event of runResearch(query)) {
-          send(event);
+          send("research", event);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        send({
+        send("error", {
           node: "_error",
           state: {
             status: "failed",
@@ -47,9 +53,10 @@ export async function POST(req: NextRequest) {
 
   return new Response(stream, {
     headers: {
-      "Content-Type": "application/x-ndjson",
-      "Cache-Control": "no-cache",
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }
