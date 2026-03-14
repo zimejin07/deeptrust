@@ -572,9 +572,9 @@ npm run start
 
 The first model load downloads weights to `.hf-cache/` (approximately 400MB for SmolLM2-360M Q4). Subsequent loads are fast.
 
-### Deploy (fly.io / Render)
+### Deploy (Render)
 
-The repo includes a **Dockerfile** and config for [fly.io](https://fly.io) and [Render](https://render.com). Both platforms build the image in the cloud (no local Docker required). See **[DEPLOY.md](DEPLOY.md)** for steps.
+The repo includes a **Dockerfile** and config for [Render](https://render.com). Render builds the image in the cloud (no local Docker required). See **[DEPLOY.md](DEPLOY.md)** for steps.
 
 ---
 
