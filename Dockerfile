@@ -1,4 +1,4 @@
-# DeepTrust — multi-stage build for fly.io / Render
+# DeepTrust — multi-stage build for Render
 # Build runs in the cloud; no local Docker required.
 
 FROM node:20-alpine AS deps

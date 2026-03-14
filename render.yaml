@@ -1,5 +1,5 @@
-# Render Blueprint — connect repo in Render dashboard, or use this for blueprint deploy
-# They build from the Dockerfile in the cloud; no local Docker required.
+# Render Blueprint — connect repo in Render dashboard, or use this for blueprint deploy.
+# Render builds from this Dockerfile in the cloud; no local Docker required.
 # https://render.com/docs/docker
 
 services:
