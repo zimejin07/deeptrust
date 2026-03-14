@@ -1,0 +1,30 @@
+# Dependencies (reinstalled in image)
+node_modules
+npm-debug.log*
+.pnpm-debug.log*
+.yarn*
+
+# Build outputs (rebuilt in image)
+.next
+dist
+out
+
+# Git and IDE
+.git
+.gitignore
+.cursor
+.vscode
+*.md
+!README.md
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# Misc
+.DS_Store
+*.log
+coverage
+.nyc_output
+.hf-cache
