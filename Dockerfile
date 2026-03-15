@@ -19,7 +19,7 @@ RUN npm run build
 
 # Pre-download the default model so the container doesn't fetch at runtime
 ENV HF_CACHE_DIR=/app/.hf-cache-build
-RUN node scripts/preload-hf-model.cjs
+RUN mkdir -p /app/.hf-cache-build && node scripts/preload-hf-model.cjs
 
 FROM node:20-slim AS runner
 WORKDIR /app
