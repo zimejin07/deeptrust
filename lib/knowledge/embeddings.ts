@@ -13,9 +13,7 @@ async function getPipeline(): Promise<unknown> {
   }
   if (!pipelinePromise) {
     const { pipeline } = await import("@xenova/transformers");
-    pipelinePromise = pipeline("feature-extraction", MODEL, {
-      quantize: false,
-    });
+    pipelinePromise = pipeline("feature-extraction", MODEL);
   }
   return pipelinePromise;
 }
