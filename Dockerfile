@@ -17,6 +17,10 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
+# Pre-download the default model so the container doesn't fetch at runtime
+ENV HF_CACHE_DIR=/app/.hf-cache-build
+RUN node scripts/preload-hf-model.cjs
+
 FROM node:20-slim AS runner
 WORKDIR /app
 
@@ -35,6 +39,10 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/package-lock.json ./package-lock.json
 RUN npm install @huggingface/transformers onnxruntime-node --omit=dev --ignore-scripts --no-save
+
+# Pre-downloaded model cache (avoids runtime download; worker reads from here)
+COPY --from=builder --chown=nextjs:nodejs /app/.hf-cache-build ./.hf-cache
+ENV HF_CACHE_DIR=/app/.hf-cache
 
 USER nextjs
 
