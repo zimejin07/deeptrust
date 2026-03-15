@@ -9,6 +9,7 @@ export {
   runResearch,
   approveAndResume,
 } from "./graph";
+export type { RunResearchOptions } from "./graph";
 
 // State types and helpers
 export {

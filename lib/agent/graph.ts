@@ -62,6 +62,8 @@ export function buildDeepTrustGraph(
       threadId:         { value: (_, n) => n },
       sessionName:      { value: (_, n) => n },
       userQuery:        { value: (_, n) => n },
+      knowledgeContext: { value: (_, n) => n },
+      contextUrls:      { value: (_, n) => n },
       plan:             { value: (_, n) => n },
       rejectionFeedback:{ value: (_, n) => n },
       planRevisionCount:{ value: (_, n) => n },
@@ -123,24 +125,36 @@ export const deepTrustGraph = buildDeepTrustGraph(checkpointer);
 // Public API
 // ─────────────────────────────────────────────────────────────
 
+export interface RunResearchOptions {
+  knowledgeContext?: string;
+  contextUrls?: string[];
+}
+
 /**
  * Start a new research session and stream events to the caller.
+ * Optionally pass retrieved context from client-side RAG (knowledgeContext, contextUrls).
  *
  * @example
  * ```ts
  * for await (const event of runResearch("What caused the 2008 crisis?")) {
  *   console.log(event);
  * }
+ * for await (const event of runResearch("Summarize my docs", "Session", { knowledgeContext: "..." })) {
+ *   console.log(event);
+ * }
  * ```
  */
 export async function* runResearch(
   userQuery: string,
-  sessionName = "Research Session"
+  sessionName = "Research Session",
+  options: RunResearchOptions = {}
 ): AsyncGenerator<{ node: string; state: Partial<ResearchState> }> {
   const initialState = createInitialState({
     threadId: uuidv4(),
     userQuery,
     sessionName,
+    knowledgeContext: options.knowledgeContext,
+    contextUrls: options.contextUrls,
   });
 
   const config = { configurable: { thread_id: initialState.threadId } };

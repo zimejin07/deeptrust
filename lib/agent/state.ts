@@ -115,6 +115,17 @@ export const ResearchState = z.object({
   /** The raw research question submitted by the user. */
   userQuery: z.string().min(1),
 
+  /**
+   * Retrieved context from the user's local knowledge base (client-side RAG).
+   * Passed into Thinker and Synthesizer so the LLM can use it when planning and reporting.
+   */
+  knowledgeContext: z.string().optional(),
+
+  /**
+   * URLs the user added as references. Thinker can emit document_fetch steps for these.
+   */
+  contextUrls: z.array(z.string()).optional(),
+
   // ── Planning ─────────────────────────────────────────────
   /** Current plan produced by the Thinker.  Null before first plan. */
   plan: ResearchPlan.nullable().default(null),
@@ -186,7 +197,10 @@ export function appendReasoning(
 
 /** Returns a fresh, validated initial state for a new session. */
 export function createInitialState(
-  params: Pick<ResearchState, "threadId" | "userQuery" | "sessionName">
+  params: Pick<
+    ResearchState,
+    "threadId" | "userQuery" | "sessionName" | "knowledgeContext" | "contextUrls"
+  >
 ): ResearchState {
   return ResearchState.parse({
     ...params,
