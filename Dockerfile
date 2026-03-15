@@ -31,6 +31,10 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 # LLM worker (required at runtime; path is process.cwd()/dist/llm)
 COPY --from=builder /app/dist ./dist
+# Worker runs in a separate thread and requires these at runtime; standalone does not trace them.
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/package-lock.json ./package-lock.json
+RUN npm install @huggingface/transformers onnxruntime-node --omit=dev --ignore-scripts --no-save
 
 USER nextjs
 
