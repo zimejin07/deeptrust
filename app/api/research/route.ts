@@ -2,7 +2,16 @@ import { runResearch } from "@/lib/agent";
 import { NextRequest } from "next/server";
 
 export async function POST(req: NextRequest) {
-  const { query } = await req.json();
+  const body = await req.json();
+  const {
+    query,
+    retrievedContext,
+    contextUrls,
+  }: {
+    query: string;
+    retrievedContext?: string;
+    contextUrls?: string[];
+  } = body;
 
   const encoder = new TextEncoder();
 
@@ -33,7 +42,15 @@ export async function POST(req: NextRequest) {
       });
 
       try {
-        for await (const event of runResearch(query)) {
+        const options =
+          retrievedContext != null || (contextUrls?.length ?? 0) > 0
+            ? { knowledgeContext: retrievedContext ?? "", contextUrls: contextUrls ?? [] }
+            : undefined;
+        for await (const event of runResearch(
+          query,
+          "Research Session",
+          options
+        )) {
           send("research", event);
         }
       } catch (err) {

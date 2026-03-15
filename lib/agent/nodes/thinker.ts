@@ -114,7 +114,15 @@ Rules:
     ? `\n\nPREVIOUS PLAN WAS REJECTED. Auditor feedback:\n${state.rejectionFeedback}\n\nRevision #${state.planRevisionCount + 1}: Produce a corrected plan.`
     : "";
 
-  let userMessage = `Research question: "${state.userQuery}"${revisionContext}`;
+  let knowledgeBlock = "";
+  if (state.knowledgeContext?.trim()) {
+    knowledgeBlock = `\n\nThe user provided the following retrieved context from their local knowledge base. Use it to inform the plan and prefer steps that leverage this context where relevant:\n\n${state.knowledgeContext}`;
+  }
+  if (state.contextUrls?.length) {
+    knowledgeBlock += `\n\nThe user also referenced these URLs (consider document_fetch steps for them where useful): ${state.contextUrls.join(", ")}`;
+  }
+
+  let userMessage = `Research question: "${state.userQuery}"${revisionContext}${knowledgeBlock}`;
 
   let lastRawThought: string | null = null;
   let lastParseError: string | null = null;

@@ -49,9 +49,16 @@ interface KnowledgeItem {
   type: KnowledgeItemType;
   label: string;
   meta?: string;
+  status?: "pending" | "indexing" | "indexed" | "error";
 }
 
 const DEFAULT_MODELS: ModelOption[] = [
+  {
+    id: "HuggingFaceTB/SmolLM2-135M-Instruct",
+    label: "SmolLM2 135M (Q4, tiny)",
+    dtype: "q4",
+    sizeNote: "~150–200 MB (approx)",
+  },
   {
     id: "HuggingFaceTB/SmolLM2-360M-Instruct",
     label: "SmolLM2 360M (Q4)",
@@ -126,6 +133,16 @@ export default function DeepTrustWorkspace() {
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const hydrateKnowledge = useCallback(() => {
+    import("@/lib/knowledge")
+      .then(({ listKnowledgeItems }) => listKnowledgeItems())
+      .then((items) => setKnowledgeItems(items))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    hydrateKnowledge();
+  }, [hydrateKnowledge]);
 
   const startStreamingAnimation = useCallback((fullText: string, messageId: string) => {
     if (!fullText) return;
@@ -246,16 +263,23 @@ export default function DeepTrustWorkspace() {
 
   const registerKnowledgeFiles = useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;
-
-    setKnowledgeItems((prev) => [
-      ...prev,
-      ...Array.from(files).map((file) => ({
-        id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
-        type: "file" as KnowledgeItemType,
-        label: file.name,
-        meta: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
-      })),
-    ]);
+    const pdfs = Array.from(files).filter((f) => f.type === "application/pdf");
+    import("@/lib/knowledge").then(({ addPdfFile }) => {
+      for (const file of pdfs) {
+        const tempId = `temp-${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        setKnowledgeItems((prev) => [
+          ...prev,
+          { id: tempId, type: "file" as KnowledgeItemType, label: file.name, meta: "Indexing…", status: "indexing" as const },
+        ]);
+        addPdfFile(file)
+          .then((meta: KnowledgeItem) => {
+            setKnowledgeItems((prev) => prev.map((x) => (x.id === tempId ? { ...meta, status: "indexed" as const } : x)));
+          })
+          .catch(() => {
+            setKnowledgeItems((prev) => prev.map((x) => (x.id === tempId ? { ...x, status: "error" as const, meta: "Failed" } : x)));
+          });
+      }
+    });
   }, []);
 
   const handleDrop: React.DragEventHandler<HTMLDivElement> = (event) => {
@@ -263,7 +287,7 @@ export default function DeepTrustWorkspace() {
     event.stopPropagation();
     setIsDragOver(false);
 
-    registerKnowledgeFiles(event.dataTransfer.files);
+    if (event.dataTransfer.files?.length) registerKnowledgeFiles(event.dataTransfer.files);
 
     const urlPayload =
       event.dataTransfer.getData("text/uri-list") ||
@@ -271,14 +295,10 @@ export default function DeepTrustWorkspace() {
 
     if (urlPayload && /^https?:\/\//i.test(urlPayload.trim())) {
       const url = urlPayload.trim();
-      setKnowledgeItems((prev) => [
-        ...prev,
-        {
-          id: `${url}-${Math.random().toString(36).slice(2)}`,
-          type: "url",
-          label: url,
-        },
-      ]);
+      import("@/lib/knowledge")
+        .then(({ addUrl }) => addUrl(url))
+        .then((meta) => setKnowledgeItems((prev) => [...prev, meta]))
+        .catch(() => {});
     }
   };
 
@@ -297,29 +317,32 @@ export default function DeepTrustWorkspace() {
   const handleAddNote = () => {
     const value = noteDraft.trim();
     if (!value) return;
-    setKnowledgeItems((prev) => [
-      ...prev,
-      {
-        id: `note-${Date.now()}`,
-        type: "note",
-        label: value,
-      },
-    ]);
-    setNoteDraft("");
+    import("@/lib/knowledge")
+      .then(({ addNote }) => addNote(value))
+      .then((meta) => {
+        setKnowledgeItems((prev) => [...prev, meta]);
+        setNoteDraft("");
+      })
+      .catch(() => {});
   };
 
   const handleAddUrl = () => {
     const value = urlDraft.trim();
     if (!value) return;
-    setKnowledgeItems((prev) => [
-      ...prev,
-      {
-        id: `url-${Date.now()}`,
-        type: "url",
-        label: value,
-      },
-    ]);
-    setUrlDraft("");
+    import("@/lib/knowledge")
+      .then(({ addUrl }) => addUrl(value))
+      .then((meta) => {
+        setKnowledgeItems((prev) => [...prev, meta]);
+        setUrlDraft("");
+      })
+      .catch(() => {});
+  };
+
+  const handleRemoveKnowledgeItem = (id: string) => {
+    import("@/lib/knowledge")
+      .then(({ removeKnowledgeDocument }) => removeKnowledgeDocument(id))
+      .then(() => setKnowledgeItems((prev) => prev.filter((x) => x.id !== id)))
+      .catch(() => {});
   };
 
   const resetStreaming = () => {
@@ -367,12 +390,21 @@ export default function DeepTrustWorkspace() {
       setChat((prev) => [...prev, userMessage, assistantMessage]);
 
       try {
+        let retrievedContext = "";
+        let contextUrls: string[] = [];
+        if (knowledgeItems.length > 0) {
+          const { retrieve } = await import("@/lib/knowledge");
+          const result = await retrieve(nextQuery);
+          retrievedContext = result.retrievedContext;
+          contextUrls = result.contextUrls;
+        }
         const response = await fetch("/api/research", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             query: nextQuery,
-            knowledge: knowledgeItems,
+            retrievedContext,
+            contextUrls,
           }),
           signal: controller.signal,
         });
@@ -721,6 +753,7 @@ export default function DeepTrustWorkspace() {
                 Attach files
                 <input
                   type="file"
+                  accept="application/pdf"
                   multiple
                   className="hidden"
                   onChange={(event) => registerKnowledgeFiles(event.target.files)}
@@ -768,19 +801,29 @@ export default function DeepTrustWorkspace() {
                 {knowledgeItems.map((item) => (
                   <div
                     key={item.id}
-                    className="flex items-center justify-between rounded-xl bg-zinc-900/70 border border-zinc-800 px-3 py-1.5 text-[11px] text-zinc-200"
+                    className="flex items-center justify-between gap-2 rounded-xl bg-zinc-900/70 border border-zinc-800 px-3 py-1.5 text-[11px] text-zinc-200"
                   >
-                    <span className="truncate">
+                    <span className="truncate min-w-0">
                       {item.type === "file" && "📄 "}
                       {item.type === "url" && "🔗 "}
                       {item.type === "note" && "✏️ "}
                       {item.label}
                     </span>
-                    {item.meta && (
-                      <span className="ml-2 shrink-0 text-[10px] text-zinc-500">
-                        {item.meta}
-                      </span>
-                    )}
+                    <span className="flex items-center gap-1.5 shrink-0">
+                      {item.meta && (
+                        <span className="text-[10px] text-zinc-500">
+                          {item.meta}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveKnowledgeItem(item.id)}
+                        className="rounded p-0.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                        aria-label="Remove"
+                      >
+                        ×
+                      </button>
+                    </span>
                   </div>
                 ))}
               </div>

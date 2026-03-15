@@ -32,11 +32,21 @@ Guidelines:
     )
     .join("\n\n---\n\n");
 
+  const knowledgeBlock =
+    state.knowledgeContext?.trim() ?
+      `
+
+User's local knowledge (use to ground or cite the report where relevant):
+${state.knowledgeContext}
+`
+    : "";
+
   const userMessage = `
 Objective: ${state.plan.objective}
 
 Research results:
 ${stepsContext}
+${knowledgeBlock}
   `.trim();
 
   const finalReport = await chatComplete(system, userMessage);
