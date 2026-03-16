@@ -46,11 +46,12 @@ export async function POST(req: NextRequest) {
           retrievedContext != null || (contextUrls?.length ?? 0) > 0
             ? { knowledgeContext: retrievedContext ?? "", contextUrls: contextUrls ?? [] }
             : undefined;
-        for await (const event of runResearch(
-          query,
-          "Research Session",
-          options
-        )) {
+        for await (const event of runResearch(query, "Research Session", options)) {
+          if (event.node === "__interrupt__") {
+            // Surface HITL interrupt to the client and close the stream.
+            send("hitl_waiting", event);
+            return;
+          }
           send("research", event);
         }
       } catch (err) {

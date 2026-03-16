@@ -20,8 +20,7 @@
  * Every node writes to `state.reasoning` for full observability.
  */
 
-import { StateGraph, END, START } from "@langchain/langgraph";
-import { MemorySaver } from "@langchain/langgraph";
+import { StateGraph, END, START, MemorySaver, Command } from "@langchain/langgraph";
 import { v4 as uuidv4 } from "uuid";
 
 import {
@@ -128,6 +127,11 @@ export const deepTrustGraph = buildDeepTrustGraph(checkpointer);
 export interface RunResearchOptions {
   knowledgeContext?: string;
   contextUrls?: string[];
+  /**
+   * Optional metadata forwarded to LangGraph / LangSmith.
+   * Useful for grouping and searching traces.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -157,9 +161,31 @@ export async function* runResearch(
     contextUrls: options.contextUrls,
   });
 
-  const config = { configurable: { thread_id: initialState.threadId } };
+  const config = {
+    configurable: { thread_id: initialState.threadId },
+    metadata: {
+      project: process.env.LANGCHAIN_PROJECT ?? "deeptrust",
+      run_name: "DeepTrust research session",
+      source: "deeptrust-ui",
+      ...(options.metadata ?? {}),
+    },
+  };
 
   for await (const event of await deepTrustGraph.stream(initialState, config)) {
+    // LangGraph interrupts surface under the __interrupt__ key.
+    if ("__interrupt__" in event) {
+      const interruptInfo = (event as any).__interrupt__;
+      yield {
+        node: "__interrupt__",
+        // Expose threadId so callers can resume the run.
+        state: {
+          threadId: initialState.threadId,
+          interrupt: interruptInfo,
+        } as any,
+      };
+      return;
+    }
+
     for (const [node, state] of Object.entries(event)) {
       yield { node, state: state as Partial<ResearchState> };
     }
@@ -169,17 +195,23 @@ export async function* runResearch(
 /**
  * Resume a paused session after human approval.
  *
- * The caller retrieves the latest checkpoint, sets `humanApproved`,
- * and calls this to resume execution from the HITL gate.
+ * The caller passes the threadId and streams the remaining events.
  */
-export async function approveAndResume(
+export async function* approveAndResume(
   threadId: string
-): Promise<void> {
+): AsyncGenerator<{ node: string; state: Partial<ResearchState> }> {
   const config = { configurable: { thread_id: threadId } };
 
   await deepTrustGraph.updateState(config, { humanApproved: true });
 
-  for await (const _ of await deepTrustGraph.stream(null, config)) {
-    // Caller can also pass this generator to their own event loop
+  // Resume execution from the last checkpoint.
+  const command = new Command({
+    resume: { approved: true },
+  });
+
+  for await (const event of await deepTrustGraph.stream(command, config)) {
+    for (const [node, state] of Object.entries(event)) {
+      yield { node, state: state as Partial<ResearchState> };
+    }
   }
 }

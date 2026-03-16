@@ -22,10 +22,17 @@ interface ModelOption {
 interface ResearchEvent {
   node: string;
   state: {
+    threadId?: string;
+    interrupt?: unknown;
     status?: string;
     plan?: {
       objective: string;
-      steps: Array<{ tool: string; input: string }>;
+      steps: Array<{ tool: string; input: string; rationale?: string }>;
+    };
+    auditResult?: {
+      verdict: "approved" | "rejected" | "needs_revision";
+      policyViolations?: string[];
+      suggestions?: string[];
     };
     finalReport?: string;
     reasoning?: Array<{ node: string; summary: string }>;
@@ -107,6 +114,8 @@ export default function DeepTrustWorkspace() {
   const [query, setQuery] = useState(PREVIEW_QUERIES[0]);
   const [chat, setChat] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<ResearchEvent[]>([]);
+  const [hitlThreadId, setHitlThreadId] = useState<string | null>(null);
+  const [hitlPayload, setHitlPayload] = useState<unknown | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItem[]>([]);
@@ -433,8 +442,12 @@ export default function DeepTrustWorkspace() {
 
           for (const raw of eventsRaw) {
             const lines = raw.split("\n");
+            let eventType = "message";
             let dataLine = "";
             for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                eventType = line.slice(7);
+              }
               if (line.startsWith("data: ")) {
                 dataLine = line.slice(6);
               }
@@ -444,6 +457,13 @@ export default function DeepTrustWorkspace() {
 
             try {
               const parsed = JSON.parse(dataLine) as ResearchEvent;
+              if (eventType === "hitl_waiting" && parsed.node === "__interrupt__") {
+                setHitlThreadId(parsed.state.threadId ?? null);
+                setHitlPayload(parsed.state.interrupt ?? null);
+                setIsStreaming(false);
+                continue;
+              }
+
               setEvents((prev) => [...prev, parsed]);
 
               if (parsed.node === "_error" || parsed.state.status === "failed") {
@@ -501,6 +521,120 @@ export default function DeepTrustWorkspace() {
   };
 
   const isInputDisabled = !isModelReady || isStreaming;
+
+  const handleApprovePlan = useCallback(async () => {
+    if (!hitlThreadId) return;
+
+    setIsStreaming(true);
+    setError(null);
+
+    const assistantMessage: ChatMessage = {
+      id: `assistant-${Date.now()}`,
+      role: "assistant",
+      content: "",
+      isStreaming: true,
+    };
+    setChat((prev) => [...prev, assistantMessage]);
+
+    try {
+      const response = await fetch("/api/research/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threadId: hitlThreadId }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("No response body");
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let hadError = false;
+      const assistantId = assistantMessage.id;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const eventsRaw = buffer.split("\n\n");
+        buffer = eventsRaw.pop() || "";
+
+        for (const raw of eventsRaw) {
+          const lines = raw.split("\n");
+          let eventType = "message";
+          let dataLine = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7);
+            }
+            if (line.startsWith("data: ")) {
+              dataLine = line.slice(6);
+            }
+          }
+
+          if (!dataLine) continue;
+
+          try {
+            const parsed = JSON.parse(dataLine) as ResearchEvent;
+            if (eventType === "error" || parsed.node === "_error" || parsed.state.status === "failed") {
+              const message =
+                parsed.state.errorMessage ?? "Research failed after approval. See server logs for details.";
+              setError(message);
+              hadError = true;
+              resetStreaming();
+            }
+
+            setEvents((prev) => [...prev, parsed]);
+
+            if (parsed.state.finalReport && !hadError) {
+              pendingFullTextRef.current = parsed.state.finalReport;
+            }
+
+            if (pendingFullTextRef.current && !streamingTimerRef.current) {
+              startStreamingAnimation(pendingFullTextRef.current, assistantId);
+            }
+          } catch (e) {
+            console.warn("Failed to parse SSE event (approve):", e);
+          }
+        }
+      }
+
+      if (!hadError) {
+        setIsStreaming(false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error during approval");
+      resetStreaming();
+    } finally {
+      setHitlThreadId(null);
+      setHitlPayload(null);
+    }
+  }, [
+    hitlThreadId,
+    resetStreaming,
+    startStreamingAnimation,
+  ]);
+
+  const handleRejectPlan = useCallback(() => {
+    setHitlThreadId(null);
+    setHitlPayload(null);
+    setIsStreaming(false);
+    setChat((prev) => [
+      ...prev,
+      {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        content:
+          "The proposed plan was rejected. Please refine your question or constraints, then try again.",
+      },
+    ]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col">
@@ -831,33 +965,151 @@ export default function DeepTrustWorkspace() {
           </div>
 
           {events.length > 0 && (
-            <div className="rounded-3xl border border-zinc-900 bg-zinc-950/70 p-3 space-y-1.5">
-              <p className="text-xs font-medium text-zinc-400 mb-1">
-                Reasoning trace
-              </p>
-              <div className="max-h-40 overflow-y-auto space-y-1.5">
-                {events
-                  .filter((event) => event.state.reasoning?.length)
-                  .map((event, index) => {
-                    const latest =
-                      event.state.reasoning?.[event.state.reasoning.length - 1];
-                    if (!latest) return null;
-                    return (
-                      <div
-                        key={`${event.node}-${index}`}
-                        className="rounded-2xl bg-zinc-900/80 border border-zinc-800 px-3 py-1.5"
-                      >
-                        <div className="flex items-center justify-between mb-0.5">
-                          <span className="text-[10px] font-mono text-zinc-500">
-                            {event.node}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-zinc-300 line-clamp-3">
-                          {latest.summary}
+            <div className="space-y-3">
+              {/* HITL approval banner */}
+              {hitlThreadId && (
+                <div className="rounded-3xl border border-amber-500/40 bg-amber-500/5 p-3 space-y-1.5">
+                  <p className="text-xs font-medium text-amber-200">
+                    Human review required
+                  </p>
+                  <p className="text-[11px] text-amber-100/90">
+                    The agent has prepared a plan and is waiting for your approval before executing tools.
+                  </p>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleApprovePlan}
+                      className="px-3 py-1.5 rounded-full text-[11px] font-medium bg-emerald-500 text-emerald-950 hover:bg-emerald-400 transition-colors"
+                    >
+                      Approve & run tools
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRejectPlan}
+                      className="px-3 py-1.5 rounded-full text-[11px] font-medium border border-amber-400/60 text-amber-100 hover:bg-amber-500/10 transition-colors"
+                    >
+                      Reject plan
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Plan & audit snapshot */}
+              {(() => {
+                const latestWithPlan = [...events]
+                  .reverse()
+                  .find((e) => e.state.plan);
+                const latestWithAudit = [...events]
+                  .reverse()
+                  .find((e) => e.state.auditResult);
+                if (!latestWithPlan && !latestWithAudit) return null;
+
+                const plan = latestWithPlan?.state.plan;
+                const audit = latestWithAudit?.state.auditResult;
+
+                return (
+                  <div className="rounded-3xl border border-zinc-900 bg-zinc-950/70 p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium text-zinc-400">
+                        Plan & audit
+                      </p>
+                      {audit && (
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                            audit.verdict === "approved"
+                              ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/30"
+                              : audit.verdict === "rejected"
+                              ? "bg-red-500/10 text-red-300 border border-red-500/30"
+                              : "bg-amber-500/10 text-amber-300 border border-amber-500/30"
+                          }`}
+                        >
+                          Audit: {audit.verdict}
+                        </span>
+                      )}
+                    </div>
+                    {plan && (
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] text-zinc-300">
+                          {plan.objective}
                         </p>
+                        <ol className="space-y-1 max-h-24 overflow-y-auto">
+                          {plan.steps.map((step, idx) => (
+                            <li
+                              key={`${step.tool}-${idx}`}
+                              className="text-[11px] text-zinc-400 flex gap-1.5"
+                            >
+                              <span className="mt-0.5 text-zinc-500">
+                                {idx + 1}.
+                              </span>
+                              <span className="flex-1">
+                                <span className="font-mono text-[10px] uppercase tracking-wide text-zinc-500 mr-1">
+                                  {step.tool}
+                                </span>
+                                {step.input}
+                              </span>
+                            </li>
+                          ))}
+                        </ol>
                       </div>
-                    );
-                  })}
+                    )}
+                    {audit?.policyViolations &&
+                      audit.policyViolations.length > 0 && (
+                        <div className="pt-1 border-t border-zinc-800/80 mt-1">
+                          <p className="text-[10px] font-medium text-red-300 mb-0.5">
+                            Policy flags
+                          </p>
+                          <ul className="space-y-0.5">
+                            {audit.policyViolations.map((v, i) => (
+                              <li
+                                key={`${v}-${i}`}
+                                className="text-[10px] text-red-200/90"
+                              >
+                                • {v}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                  </div>
+                );
+              })()}
+
+              {/* Reasoning trace */}
+              <div className="rounded-3xl border border-zinc-900 bg-zinc-950/70 p-3 space-y-1.5">
+                <p className="text-xs font-medium text-zinc-400 mb-1">
+                  Reasoning trace
+                </p>
+                <div className="max-h-40 overflow-y-auto space-y-1.5">
+                  {events
+                    .filter((event) => event.state.reasoning?.length)
+                    .map((event, index) => {
+                      const latest =
+                        event.state.reasoning?.[
+                          event.state.reasoning.length - 1
+                        ];
+                      if (!latest) return null;
+                      return (
+                        <div
+                          key={`${event.node}-${index}`}
+                          className="rounded-2xl bg-zinc-900/80 border border-zinc-800 px-3 py-1.5"
+                        >
+                          <div className="flex items-center justify-between mb-0.5">
+                            <span className="text-[10px] font-mono text-zinc-500">
+                              {event.node}
+                            </span>
+                            {event.state.status && (
+                              <span className="text-[10px] text-zinc-500">
+                                {event.state.status}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-zinc-300 line-clamp-3">
+                            {latest.summary}
+                          </p>
+                        </div>
+                      );
+                    })}
+                </div>
               </div>
             </div>
           )}
