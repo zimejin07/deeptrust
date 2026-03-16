@@ -222,7 +222,7 @@ export async function chatComplete(
   const startTime = Date.now();
 
   const output = await generator(messages, {
-    max_new_tokens: 4096,
+    max_new_tokens: 1024,
     do_sample: true,
     temperature: 0.7,
   });
