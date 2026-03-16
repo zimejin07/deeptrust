@@ -36,8 +36,12 @@ Render **Free** instances have **512 MB RAM**. Model loading often exceeds this:
 - `HF_CACHE_DIR` — Where to cache model files (default `./.hf-cache`). On ephemeral disks this is lost between restarts; models re-download on cold start.
 - `DEEPTRUST_LOAD_MODEL_AT_STARTUP` — Set to `0` or `false` to disable loading the model when the server starts (default: load at startup). Use this only if you prefer to load on first user request.
 
+## Hugging Face Spaces (Docker)
+
+When running as a **Docker Space**, the app **skips startup model preload** so the Space becomes healthy within the 30‑minute launch timeout. You’ll see in the logs: `[instrumentation] Hugging Face Space detected; skipping startup model preload (model will load on first use).` The model loads on first use (e.g. when you click “Load model” or run research). If your Space still times out, set the variable `DEEPTRUST_LOAD_MODEL_AT_STARTUP=0` in the Space’s **Settings → Variables**. In the Space README YAML you can set `app_port: 3000` to match the Dockerfile.
+
 ## Notes
 
-- **Model at startup:** The app loads the default model (from `HF_MODEL`, or 135M q4) when the Node server starts, so the first user request does not wait for download/load. If preload fails (e.g. OOM), the server still starts and the UI "Load model" button can be used to retry.
+- **Model at startup:** The app loads the default model (from `HF_MODEL`, or 135M q4) when the Node server starts, so the first user request does not wait for download/load. (On Hugging Face Spaces this is skipped so the Space stays healthy.) If preload fails (e.g. OOM), the server still starts and the UI "Load model" button can be used to retry.
 - **First deploy/cold start** can be slow while the model downloads and loads during server boot; subsequent requests are fast.
 - **Standalone:** The image uses Next.js `output: "standalone"` for a smaller build and includes the compiled LLM worker under `dist/llm/`.
