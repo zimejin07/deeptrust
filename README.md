@@ -6,7 +6,7 @@ colorTo: indigo
 sdk: docker
 app_port: 3000
 pinned: false
-short_description: LangGraph research agent with local LLM (SmolLM), Next.js workspace, and SSE streaming.
+short_description: LangGraph research agent with local LLM and Next.js workspace.
 tags:
   - langgraph
   - nextjs
