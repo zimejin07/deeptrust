@@ -95,7 +95,6 @@ function getModelStatus(forModelId, forDtype) {
     };
 }
 function loadModel(modelId, dtype, onProgress) {
-    console.log("[worker] loadModel called");
     const nextId = modelId ?? currentModelId;
     const nextDtype = dtype ?? currentDtype;
     if (nextId !== currentModelId || nextDtype !== currentDtype) {
@@ -170,7 +169,6 @@ function loadModel(modelId, dtype, onProgress) {
     return generatorPromise;
 }
 async function chatComplete(systemPrompt, userMessage) {
-    console.log("[worker] chatComplete called");
     const generator = await loadModel();
     const messages = [
         { role: "system", content: systemPrompt },
@@ -180,7 +178,7 @@ async function chatComplete(systemPrompt, userMessage) {
     console.log(`🤖 [worker] Generating response for: "${preview}..."`);
     const startTime = Date.now();
     const output = await generator(messages, {
-        max_new_tokens: 512,
+        max_new_tokens: 1024,
         do_sample: true,
         temperature: 0.7,
     });

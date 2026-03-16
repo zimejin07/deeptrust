@@ -25,15 +25,21 @@ export async function auditorNode(
 You are the Auditor node of DeepTrust.
 You evaluate research plans against an organisational policy and return a structured verdict.
 
-Return ONLY a valid JSON object matching:
+Return ONLY a valid JSON object, for example:
 {
-  "verdict": "approved" | "rejected" | "needs_revision",
-  "policyViolations": string[],
-  "suggestions": string[],
-  "auditedAt": string (ISO 8601)
+  "verdict": "needs_revision",
+  "policyViolations": ["policy section / rule that is violated"],
+  "suggestions": ["how to rewrite or adjust the plan to comply"],
+  "auditedAt": "2025-01-01T00:00:00.000Z"
 }
 
-Rules:
+Field rules:
+- "verdict" must be one of: "approved", "rejected", "needs_revision".
+- "policyViolations" is an array of human-readable strings that reference specific policy rules.
+- "suggestions" is an array of concrete rewrite suggestions for making the plan compliant.
+- "auditedAt" must be an ISO 8601 timestamp string.
+
+Global rules:
 - "approved" means the plan fully complies with policy.
 - "rejected" means the plan has hard violations that cannot be patched.
 - "needs_revision" means soft issues exist but the plan is salvageable.
