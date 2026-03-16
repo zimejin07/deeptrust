@@ -23,9 +23,14 @@ DeepTrust is a research automation system that orchestrates an LLM through a mul
 │                              API LAYER                                      │
 │  ┌─────────────────────┐  ┌─────────────────────────────────────┐          │
 │  │ GET/POST             │  │ POST /api/research                   │          │
-│  │ /api/model/load      │  │ (SSE: event + data per research step)│          │
+│  │ /api/model/load      │  │ (SSE: event + data per research step │          │
 │  │ (SSE progress)       │  └─────────────────┬───────────────────┘          │
 │  └─────────┬───────────┘                      │                             │
+│            │                                   │                             │
+│            │           ┌─────────────────────────────────────┐               │
+│            │           │ POST /api/research/approve          │               │
+│            │           │ (resume after HITL approval)        │               │
+│            │           └─────────────────────────────────────┘               │
 └────────────┼─────────────────────────────────┼─────────────────────────────┘
              │                                 │
              ▼                                 ▼

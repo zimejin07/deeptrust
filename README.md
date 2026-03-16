@@ -469,14 +469,15 @@ export function extractJSON(text: string): unknown {
 
 ### Research Endpoint (SSE)
 
-`POST /api/research` streams research state updates as **Server-Sent Events** so the client can show progress immediately and parse events by type. Using SSE (instead of raw NDJSON) gives a standard, well-supported streaming protocol and allows future event names (e.g. `ping`, `heartbeat`) without changing the wire format.
+`POST /api/research` streams research state updates as **Server-Sent Events** so the client can show progress immediately and parse events by type. Using SSE (instead of raw NDJSON) gives a standard, well-supported streaming protocol and allows future event names without changing the wire format.
 
-**Request body:** `{ "query": string, "knowledge"?: Array<{ id, type, label, meta? }> }`. The `knowledge` array is sent by the workspace when the user adds files, URLs, or notes in the Context panel; the backend currently uses only `query` and may later use `knowledge` for RAG or plan conditioning.
+**Request body:** `{ "query": string, "retrievedContext"?: string, "contextUrls"?: string[] }`. `retrievedContext` and `contextUrls` come from the client-side knowledge store (files/URLs/notes) and are used to condition the plan and synthesis steps.
 
 **Response:** `Content-Type: text/event-stream`. Each message is an SSE message:
 
 - `event: start` — First event; signals that the run has started (enables optimistic UI).
 - `event: research` — One per graph node update; `data` is `{ node, state }`.
+- `event: hitl_waiting` — Emitted when the graph reaches the HITL gate and pauses. `data` is `{ node: "__interrupt__", state: { threadId, interrupt } }`, which the client uses to show the approval banner and remember which `threadId` to resume.
 - `event: error` — On exception; `data` includes `node: "_error"` and `state.errorMessage`.
 
 ```typescript
@@ -485,10 +486,22 @@ const send = (event: string, payload: { node: string; state: Record<string, unkn
   controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`));
 };
 send("start", { node: "_start", state: { status: "started", ... } });
-for await (const event of runResearch(query)) {
+for await (const event of runResearch(query, "Research Session", options)) {
+  if (event.node === "__interrupt__") {
+    send("hitl_waiting", event);
+    return;
+  }
   send("research", event);
 }
 // On catch: send("error", { node: "_error", state: { status: "failed", errorMessage } });
+
+### HITL Approval Endpoint
+
+`POST /api/research/approve` resumes a paused run after human approval. The client sends `{ "threadId": string }` (obtained from the earlier `hitl_waiting` event), and the server:
+
+- Sets `humanApproved = true` for that thread.
+- Resumes the LangGraph stream from the last checkpoint.
+- Streams the remaining `{ node, state }` events as `event: research` SSE messages until completion or error.
 ```
 
 ### Model Loading Endpoint
@@ -506,11 +519,12 @@ The React client (`app/page.tsx`) is a single-page workspace that mirrors a Curs
 | Area | Purpose |
 |------|--------|
 | **Chat** | User messages and assistant replies. When a run finishes, the final report is streamed **word-by-word** into the last assistant message to mimic a live conversation. |
-| **Context / Knowledge** | Drag-and-drop zone for PDFs, text files, or URLs; optional fields to add URLs and short notes. Stored in React state and sent as `knowledge` with each research request for future backend use. |
+| **Context / Knowledge** | Drag-and-drop zone for PDFs, text files, or URLs; optional fields to add URLs and short notes. Indexed on the client and summarized into `retrievedContext` + `contextUrls` for each research request. |
 | **Quick-action chips** | A row of buttons below the input (e.g. “Help me learn this topic”, “Summarize these docs”) that set or extend the query and trigger a run—Gemini-style shortcuts. |
 | **Starter cards** | Empty state with example prompts (e.g. “How does Gemini Pro work…”) that fill the input and can be run in one click. |
 | **Model card** | Compact panel for model selection, load/progress, and status (Ready / Loading / Error). |
-| **Reasoning trace** | Scrollable list of the latest reasoning entries from the event stream (node + summary) for observability. |
+| **Plan & audit panel** | Shows the latest plan objective, step list, and audit verdict (approved / rejected / needs_revision), plus any policy violations. |
+| **Reasoning trace** | Scrollable list of the latest reasoning entries from the event stream (node + summary + status) for observability. |
 
 ### Optimistic UI and Shimmer
 
@@ -519,7 +533,7 @@ The React client (`app/page.tsx`) is a single-page workspace that mirrors a Curs
 
 ### SSE Consumption (Research)
 
-The client uses `EventSource`-style parsing on the `ReadableStream`: split by `\n\n`, then for each line look for `event:` and `data:` and dispatch by event type. Accumulated `research` events update both the reasoning trace and the chat when `finalReport` is present.
+The client uses `EventSource`-style parsing on the `ReadableStream`: split by `\n\n`, then for each line look for `event:` and `data:` and dispatch by event type. Accumulated `research` events update both the reasoning trace and the chat when `finalReport` is present. A special `hitl_waiting` event updates local HITL state and shows the approval banner instead of treating the pause as an error.
 
 ```typescript
 // Conceptual: read stream, split by double newline, parse "event:" and "data:"
@@ -530,6 +544,10 @@ for (const chunk of chunks) {
   if (eventMatch && dataMatch) {
     const payload = JSON.parse(dataMatch[1]);
     if (eventMatch[1] === "research") setEvents((prev) => [...prev, payload]);
+    if (eventMatch[1] === "hitl_waiting" && payload.node === "__interrupt__") {
+      setHitlThreadId(payload.state.threadId);
+      setHitlPayload(payload.state.interrupt);
+    }
     // ... handle start, error; when payload.state.finalReport exists, run word-by-word animation
   }
 }
@@ -617,6 +635,14 @@ LANGCHAIN_PROJECT=deeptrust
 ```
 
 With tracing enabled, every graph run is recorded. You can inspect prompts, raw LLM outputs, and state transitions in the LangSmith UI, which helps diagnose schema validation errors and long-running or looping runs.
+
+This project forwards LangGraph metadata with each run:
+
+- `project`: from `LANGCHAIN_PROJECT` (defaults to `deeptrust`)
+- `run_name`: `"DeepTrust research session"`
+- `source`: `"deeptrust-ui"`
+
+These fields make it easier to filter and group traces in LangSmith.
 
 ### Available Models
 
