@@ -6,7 +6,7 @@ colorTo: indigo
 sdk: docker
 app_port: 3000
 pinned: false
-short_description: LangGraph research agent with local LLM and Next.js workspace.
+short_description: LangGraph research agent workspace.
 tags:
   - langgraph
   - nextjs
