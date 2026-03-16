@@ -42,3 +42,6 @@ next-env.d.ts
 
 # huggingface model cache
 .hf-cache/
+
+# HF Spaces reject binary files in git; keep .pptx out of history
+docs/*.pptx
