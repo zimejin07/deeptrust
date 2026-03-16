@@ -1,0 +1,32 @@
+/**
+ * DeepTrust Research Agent — Public API
+ */
+
+// Graph and public functions
+export {
+  buildDeepTrustGraph,
+  deepTrustGraph,
+  runResearch,
+  approveAndResume,
+} from "./graph";
+export type { RunResearchOptions } from "./graph";
+
+// State types and helpers
+export {
+  ResearchState,
+  ResearchPlan,
+  ResearchStep,
+  AuditResult,
+  ReasoningEntry,
+  NodeName,
+  createInitialState,
+  appendReasoning,
+} from "./state";
+
+// LLM client (for advanced usage)
+export { chatComplete, loadModel, getModelStatus, MODEL_ID, MODELS } from "./llm";
+export type { ModelProgress, ProgressCallback, ModelOption } from "./llm";
+
+// Utilities
+export { extractJSON, loadPolicy } from "./utils";
+
