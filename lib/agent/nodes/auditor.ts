@@ -6,6 +6,20 @@ import { chatComplete } from "../llm";
 import { extractJSON, loadPolicy } from "../utils";
 import { ResearchState, AuditResult, appendReasoning } from "../state";
 
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (typeof item === "string") return item;
+    if (item && typeof item === "object") {
+      const obj = item as Record<string, unknown>;
+      if (typeof obj.reason === "string") return obj.reason;
+      if (typeof obj.message === "string") return obj.message;
+      return JSON.stringify(obj);
+    }
+    return String(item);
+  });
+}
+
 /**
  * Compares the current plan against POLICY.md.
  * Sets `auditResult` with verdict + structured feedback.
@@ -64,8 +78,11 @@ ${JSON.stringify(state.plan, null, 2)}
     throw new Error(`Auditor produced non-JSON output: ${rawThought.slice(0, 300)}`);
   }
 
+  const base = parsed as Record<string, unknown>;
   const auditResult = AuditResult.parse({
-    ...(parsed as object),
+    ...base,
+    policyViolations: normalizeStringArray(base.policyViolations),
+    suggestions: normalizeStringArray(base.suggestions),
     auditedAt: new Date().toISOString(),
   });
 
