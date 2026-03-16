@@ -20,7 +20,7 @@
  * Every node writes to `state.reasoning` for full observability.
  */
 
-import { StateGraph, END, START, MemorySaver, Command } from "@langchain/langgraph";
+import { StateGraph, END, START, MemorySaver } from "@langchain/langgraph";
 import { v4 as uuidv4 } from "uuid";
 
 import {
@@ -205,11 +205,7 @@ export async function* approveAndResume(
   await deepTrustGraph.updateState(config, { humanApproved: true });
 
   // Resume execution from the last checkpoint.
-  const command = new Command({
-    resume: { approved: true },
-  });
-
-  for await (const event of await deepTrustGraph.stream(command, config)) {
+  for await (const event of await deepTrustGraph.stream(null, config)) {
     for (const [node, state] of Object.entries(event)) {
       yield { node, state: state as Partial<ResearchState> };
     }
