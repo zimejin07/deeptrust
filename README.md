@@ -1,3 +1,21 @@
+---
+title: DeepTrust Research Agent
+emoji: 🔬
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 3000
+pinned: false
+short_description: LangGraph research agent with local LLM (SmolLM), Next.js workspace, and SSE streaming.
+tags:
+  - langgraph
+  - nextjs
+  - transformers
+  - research-agent
+  - llm
+  - typescript
+---
+
 # DeepTrust Research Agent
 
 A TypeScript implementation of an autonomous research agent: LangGraph state machines, local LLM inference (Hugging Face Transformers in a worker thread), and a real-time, AI-centric Next.js workspace. The UI is designed for a Cursor/Gemini-like flow—immediate feedback, Server-Sent Events (SSE) streaming, optimistic updates, a knowledge/context drop zone, and quick-action chips—so the full application from graph nodes to the browser is understandable in one read.
