@@ -6,6 +6,19 @@ import { chatComplete } from "../llm";
 import { extractJSON, loadPolicy } from "../utils";
 import { ResearchState, AuditResult, appendReasoning } from "../state";
 
+const MAX_AUDITOR_ATTEMPTS = 3;
+
+const VERDICT_REGEX = /"verdict"\s*:\s*"(approved|rejected|needs_revision)"/;
+
+/**
+ * Format Zod errors for inclusion in the next prompt so the LLM can self-correct.
+ */
+function formatZodErrors(issues: { path: unknown[]; message: string }[]): string {
+  return issues
+    .map((i) => `  - ${i.path.map((p) => String(p)).join(".")}: ${i.message}`)
+    .join("\n");
+}
+
 function normalizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
@@ -18,6 +31,34 @@ function normalizeStringArray(value: unknown): string[] {
     }
     return String(item);
   });
+}
+
+function parseAuditResult(parsed: unknown) {
+  const base = parsed as Record<string, unknown>;
+  return AuditResult.safeParse({
+    ...base,
+    policyViolations: normalizeStringArray(base.policyViolations),
+    suggestions: normalizeStringArray(base.suggestions),
+    auditedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * Last resort when JSON and retries fail: recover verdict from a substring fragment.
+ */
+function auditFromVerdictRegex(rawThought: string): AuditResult | null {
+  const m = rawThought.match(VERDICT_REGEX);
+  if (!m) return null;
+  const verdict = m[1];
+  const result = AuditResult.safeParse({
+    verdict,
+    policyViolations: [
+      "Auditor output could not be parsed as full JSON; verdict was recovered from partial output.",
+    ],
+    suggestions: [],
+    auditedAt: new Date().toISOString(),
+  });
+  return result.success ? result.data : null;
 }
 
 /**
@@ -61,7 +102,7 @@ Global rules:
 - Do not include markdown fences or any prose outside the JSON object.
   `.trim();
 
-  const userMessage = `
+  const userMessageBase = `
 POLICY:
 ${policy}
 
@@ -69,23 +110,52 @@ PLAN TO AUDIT:
 ${JSON.stringify(state.plan, null, 2)}
   `.trim();
 
-  const rawThought = await chatComplete(system, userMessage);
+  let lastRawThought = "";
+  let lastParseError: string | null = null;
 
-  let parsed: unknown;
-  try {
-    parsed = extractJSON(rawThought);
-  } catch {
-    throw new Error(`Auditor produced non-JSON output: ${rawThought.slice(0, 300)}`);
+  for (let attempt = 1; attempt <= MAX_AUDITOR_ATTEMPTS; attempt++) {
+    const parseFeedback =
+      lastParseError &&
+      `\n\nYour previous response had errors. Fix them and return ONLY valid JSON:\n${lastParseError}`;
+
+    const rawThought = await chatComplete(
+      system,
+      userMessageBase + (parseFeedback ?? "")
+    );
+    lastRawThought = rawThought;
+
+    let parsed: unknown;
+    try {
+      parsed = extractJSON(rawThought);
+    } catch {
+      lastParseError = `Could not parse as JSON. Output started with: ${rawThought.slice(0, 200)}`;
+      continue;
+    }
+
+    const zodResult = parseAuditResult(parsed);
+    if (zodResult.success) {
+      return buildAuditorState(state, zodResult.data, rawThought);
+    }
+
+    lastParseError = formatZodErrors(zodResult.error.issues);
   }
 
-  const base = parsed as Record<string, unknown>;
-  const auditResult = AuditResult.parse({
-    ...base,
-    policyViolations: normalizeStringArray(base.policyViolations),
-    suggestions: normalizeStringArray(base.suggestions),
-    auditedAt: new Date().toISOString(),
-  });
+  const regexAudit = auditFromVerdictRegex(lastRawThought);
+  if (regexAudit) {
+    return buildAuditorState(state, regexAudit, lastRawThought);
+  }
 
+  throw new Error(
+    `Auditor failed after ${MAX_AUDITOR_ATTEMPTS} attempts. The model did not return valid JSON matching the audit schema. ` +
+      `Try a larger model or lower sampling temperature. Last output (excerpt): ${lastRawThought.slice(0, 400)}`
+  );
+}
+
+function buildAuditorState(
+  state: ResearchState,
+  auditResult: AuditResult,
+  rawThought: string
+): Partial<ResearchState> {
   const isRejected = auditResult.verdict !== "approved";
 
   const rejectionFeedback: string | null = isRejected
@@ -121,4 +191,3 @@ ${JSON.stringify(state.plan, null, 2)}
     updatedAt: new Date().toISOString(),
   };
 }
-
