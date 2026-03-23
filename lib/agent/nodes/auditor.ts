@@ -43,6 +43,8 @@ const PLACEHOLDER_PATTERNS = [
   /policy section.*rule that is violated/i,
   /rewrite or adjust the plan to comply/i,
   /how to rewrite or adjust/i,
+  /^#?DeepTrust/i,
+  /^#?Default Policy/i,
 ];
 
 const VERDICT_VALUES = new Set(["approved", "rejected", "needs_revision"]);
@@ -69,8 +71,8 @@ function parseAuditResult(parsed: unknown) {
   const violations = normalizeStringArray(base.policyViolations);
   const suggestions = normalizeStringArray(base.suggestions);
 
-  const allPlaceholder =
-    violations.every(isNonsenseViolation) && suggestions.every(isNonsenseViolation);
+  // Auto-approve when all violations are nonsense; suggestions are advisory and don't block.
+  const allPlaceholder = violations.every(isNonsenseViolation);
 
   return AuditResult.safeParse({
     ...base,
