@@ -524,8 +524,8 @@ The React client (`app/page.tsx`) is a single-page workspace that mirrors a Curs
 |------|--------|
 | **Chat** | User messages and assistant replies. When a run finishes, the final report is streamed **word-by-word** into the last assistant message to mimic a live conversation. |
 | **Context / Knowledge** | Drag-and-drop zone for PDFs, text files, or URLs; optional fields to add URLs and short notes. Indexed on the client and summarized into `retrievedContext` + `contextUrls` for each research request. |
-| **Quick-action chips** | A row of buttons below the input (e.g. “Help me learn this topic”, “Summarize these docs”) that set or extend the query and trigger a run—Gemini-style shortcuts. |
-| **Starter cards** | Empty state with example prompts (e.g. “How does Gemini Pro work…”) that fill the input and can be run in one click. |
+| **Quick-action chips** | A row of buttons below the input (e.g. local knowledge + cited web search, HITL plan approval, on-device vs network) that set or extend the query and trigger a run. |
+| **Starter cards** | Empty state with example prompts (e.g. local inference and verifiable research) that fill the input and can be run in one click. |
 | **Model card** | Compact panel for model selection, load/progress, and status (Ready / Loading / Error). |
 | **Plan & audit panel** | Shows the latest plan objective, step list, and audit verdict (approved / rejected / needs_revision), plus any policy violations. |
 | **Reasoning trace** | Scrollable list of the latest reasoning entries from the event stream (node + summary + status) for observability. |

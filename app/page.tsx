@@ -87,17 +87,17 @@ const DEFAULT_MODELS: ModelOption[] = [
 ];
 
 const QUICK_ACTIONS = [
-  "Create image-ready research brief",
-  "Help me learn this topic",
-  "Summarize these docs for me",
-  "Audit my assumptions",
-  "Turn this into an implementation plan",
+  "Research with my local knowledge + cited web results",
+  "Plan searches first—I approve before tools run",
+  "Summarize what my uploaded materials say about a topic",
+  "Compare two claims with an auditable source trail",
+  "Explain what stays on-device vs. uses the network here",
 ];
 
 const PREVIEW_QUERIES = [
-  "How does Gemini Pro work for deep research workflows?",
-  "Design a learning plan for mastering LangGraph in 30 days.",
-  "Compare self-hosted vs managed LLM stacks for a fintech startup.",
+  "How does local LLM inference reduce data sent to third parties?",
+  "Plan verifiable research on a technical topic with clear sources",
+  "What trade-offs exist between on-device models and cloud APIs?",
 ];
 
 export default function DeepTrustWorkspace() {

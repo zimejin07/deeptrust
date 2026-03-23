@@ -411,8 +411,8 @@ RAG is implemented under **`lib/knowledge/`** and runs **only in the browser** (
 
 ### Quick Actions and Starter Cards
 
-- **Quick-action chips** below the input (e.g. “Help me learn this topic”, “Summarize these docs”) set or extend the query and optionally trigger a run, similar to Gemini suggestion chips.
-- **Starter cards** in the empty state show example prompts (e.g. “How does Gemini Pro work…”) and populate the input or start a run when clicked, so the app feels ready to use without typing.
+- **Quick-action chips** below the input (e.g. local knowledge + cited web results, approve-before-tools, auditable source trail, on-device vs network) set or extend the query and optionally trigger a run.
+- **Starter cards** in the empty state show example prompts aligned with privacy-first research (e.g. local inference, verifiable sources) and populate the input or start a run when clicked.
 
 ### Why This Structure
 
