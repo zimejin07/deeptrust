@@ -388,7 +388,7 @@ The workspace (`app/page.tsx`) is built for a Cursor/Gemini-like flow: immediate
 | Area | Purpose |
 |------|--------|
 | **Chat** | User messages and assistant replies. Assistant messages show a shimmer placeholder while waiting, then the final report is revealed word-by-word for a live-conversation feel. |
-| **Context panel** | Knowledge drop zone: drag-and-drop files (PDF, text, etc.) or add URLs/notes. Items are listed and sent as `knowledge` in the research request for future agent use. |
+| **Context panel** | Knowledge drop zone: drag-and-drop PDFs, notes, and URL references. Items are indexed in **IndexedDB** via `lib/knowledge` (browser embeddings + chunks); on submit, **`retrieve(query)`** runs client-side and the request sends **`retrievedContext`** + **`contextUrls`** to `POST /api/research`. |
 | **Model card** | Model selection, load/progress, status pill (Ready / Loading / Error). Uses the same SSE pattern as model load API. |
 | **Reasoning trace** | Scrollable list of the latest reasoning summaries per node so you can follow the graph’s flow while the chat shows the final answer. |
 
@@ -399,11 +399,15 @@ The workspace (`app/page.tsx`) is built for a Cursor/Gemini-like flow: immediate
 3. **Final report:** When an event contains `state.finalReport`, that text is stored and a word-by-word animation is started for the latest assistant message: a timer (e.g. every 40ms) reveals the next word until the full report is shown, then `isStreaming` is cleared.
 4. **Abort/cleanup:** A ref holds an `AbortController` for the in-flight request; starting a new run aborts the previous one and clears the streaming timer so only one “live” reply runs at a time.
 
-### Knowledge / Context Flow
+### Client-side knowledge (browser “vector DB”)
 
-- **Drop zone:** Accepts drag-and-drop files and paste/drop of URLs (`text/uri-list` or plain text). Files and URLs are turned into `KnowledgeItem` entries (id, type, label, optional meta).
-- **Request payload:** The research request sends `{ query, knowledge: knowledgeItems }`. The backend currently uses only `query`; `knowledge` is reserved for future use (e.g. RAG, plan conditioning).
-- **UI copy:** The panel explains that added context can be used to ground answers; when the agent supports it, no frontend change is required beyond the existing payload.
+RAG is implemented under **`lib/knowledge/`** and runs **only in the browser** (see README “Client-side knowledge store”).
+
+- **Storage:** IndexedDB database `deeptrust-knowledge`: **`documents`** (id, type: file \| url \| note, label, optional url) and **`chunks`** (id, documentId, text, **embedding** float array, span indices). Index **`byDocument`** on chunks supports cascading delete.
+- **Embeddings:** `@xenova/transformers` **`feature-extraction`** with **`Xenova/all-MiniLM-L6-v2`**, mean-pooled and normalized; **cosine similarity** in JS for scoring. Distinct from the server’s chat LLM (worker thread).
+- **Ingestion:** PDFs → extract text → `chunkText` (~500 chars, overlap) → embed each chunk → persist. Notes → same. URLs → one chunk embedding `URL: …` (no network fetch of page body in v1).
+- **Retrieval:** `retrieve(userQuery)` embeds the query, scores **all chunks**, returns **top-K** (8) concatenated as `retrievedContext` and deduped URL list as `contextUrls`.
+- **API contract:** `POST /api/research` body includes `query`, **`retrievedContext`**, **`contextUrls`**. The route passes them into `runResearch` options → `ResearchState.knowledgeContext` / `contextUrls` for Thinker and Synthesizer. Original files are **not** uploaded—only retrieved snippet text crosses the wire.
 
 ### Quick Actions and Starter Cards
 
@@ -426,6 +430,7 @@ The workspace (`app/page.tsx`) is built for a Cursor/Gemini-like flow: immediate
 | `lib/agent/llm/` | LLM client abstraction |
 | `lib/agent/utils/` | Shared utilities (JSON extraction, policy loading) |
 | `lib/agent/` | Graph construction, state schemas, routing |
+| `lib/knowledge/` | Client-only RAG: IndexedDB, Xenova embeddings, chunking, retrieve (import from browser only) |
 | `app/api/` | HTTP endpoints |
 | `app/` | React UI components |
 

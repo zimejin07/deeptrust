@@ -38,6 +38,7 @@ A TypeScript implementation of an autonomous research agent: LangGraph state mac
 10. [Running the Project](#running-the-project)
 11. [Configuration](#configuration)
 12. [FAQ: Architecture & design choices](#faq-architecture--design-choices)
+13. [Client-side knowledge store (browser RAG)](#client-side-knowledge-store-browser-rag)
 
 ---
 
@@ -691,6 +692,10 @@ Concretely:
 
 Net effect: the **graph and prompts are the product’s brain**; Next.js is a **host** for I/O and rendering, not a place where control flow leaks.
 
+### Why keep embeddings and vector storage in the browser (`lib/knowledge`)?
+
+See [Client-side knowledge store (browser RAG)](#client-side-knowledge-store-browser-rag) for the full picture—briefly: **privacy** (documents stay on-device), **no server vector DB** to run or pay for, and **CORS-free** PDF/text handling in the user’s browser. The tradeoff is retrieval runs client-side and only **derived text** (`retrievedContext` + `contextUrls`) is sent to the API.
+
 ### Why LangGraph instead of a hand-rolled loop?
 
 Research here is inherently **cyclic** (thinker ↔ auditor revisions, tool steps, HITL). LangGraph provides an explicit **StateGraph**, **checkpointing** keyed by `thread_id`, and first-class **interrupt/resume** for human approval. Conditional edges encode policy (“approved → HITL”, “rejected → thinker”) in one place instead of scattering `if` chains across services. We still treat LLM outputs as untrusted: Zod validation, JSON extraction helpers, and retry/feedback loops live in nodes—LangGraph carries the **control flow**, not business shortcuts.
@@ -730,6 +735,32 @@ After an approved audit, **`hitl_gate`** calls LangGraph’s **`interrupt()`**, 
 ### What is intentionally out of scope or “phase 2”?
 
 Persistent checkpoints beyond **in-memory** `MemorySaver` (e.g. Postgres), additional tools (`document_fetch`, code execution), and parallel step execution are documented as extensions in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The current architecture is optimized for **clarity, local inference, and a single deployable** rather than maximum throughput.
+
+---
+
+## Client-side knowledge store (browser RAG)
+
+**`lib/knowledge/`** implements a **small vector retrieval layer entirely in the browser**. It is not used by the server-side agent directly; instead the React client **indexes** user documents locally, **retrieves** relevant snippets for the current query, and passes **`retrievedContext`** and **`contextUrls`** in the JSON body of `POST /api/research`. The Thinker and Synthesizer inject that text into prompts on the server (`ResearchState.knowledgeContext` / `contextUrls`). This keeps raw files out of the request body and avoids shipping user PDFs to your backend.
+
+### Components
+
+| Piece | Role |
+|-------|------|
+| **IndexedDB** (`db.ts`) | Database `deeptrust-knowledge` with object stores **`documents`** (metadata: id, type, label, optional url) and **`chunks`** (text segments + embedding vectors). Chunks are indexed **`byDocument`** so deleting a document removes its chunks in one transaction. |
+| **Embeddings** (`embeddings.ts`) | **`@xenova/transformers`** runs **`feature-extraction`** with **`Xenova/all-MiniLM-L6-v2`** in the browser (lazy singleton pipeline). Vectors are **L2-normalized**; **cosine similarity** is computed in plain JavaScript for query ↔ chunk scoring. |
+| **Chunking** (`chunk.ts`) | Fixed windows (~500 chars, ~80 overlap, word-boundary friendly) for PDF and note text so long documents become many retrievable units. |
+| **PDFs** (`pdf.ts`) | Text extraction in the client before chunk/embed (no server-side PDF parser required for v1). |
+| **Store** (`store.ts`) | Orchestrates **add** (PDF, note, URL), **list**, **remove**, and **`retrieve`**. Ingestion embeds each chunk and persists to IndexedDB. URLs are stored as **reference-only** rows (embedding of a short `URL: …` string); the app does **not** fetch arbitrary URLs server-side in v1. |
+
+### Retrieval
+
+On research submit, the client calls **`retrieve(query)`**: embed the query, score **every stored chunk** against it (cosine similarity), take **top-K** (currently 8), and concatenate chunk text into **`retrievedContext`** with source labels. URL-type documents contribute their hrefs to **`contextUrls`**. This is a **linear scan over chunks**—appropriate for local, modest corpora; a future upgrade could add an approximate index or server-side sync without changing the agent contract.
+
+### Boundaries
+
+- **Import only from client components** (or dynamic `import()` from the client bundle). IndexedDB and Xenova require **`window`**; `db.ts` rejects server-side `openDB()`.
+- **Server LLM** (SmolLM in the worker) is separate from **embedding** (MiniLM in the tab): two different models for two roles.
+- **Privacy**: IndexedDB is per-origin; clearing site data clears the store. Only the **retrieved** snippet string crosses the wire to your API, not the full original files.
 
 ---
 
