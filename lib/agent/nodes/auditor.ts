@@ -1,9 +1,9 @@
 /**
  * Auditor Node — validates plans against organizational policy
  *
- * Two-layer audit: deterministic rule checks run first (step count, request
- * budget, content safety) so the gate works even when the LLM is too small
- * to reason about policy.  The LLM audit runs second and can add violations
+ * Two-layer audit: deterministic structural checks run first (step count,
+ * request budget) so the gate works even when the LLM is too small to
+ * reason about policy.  The LLM audit runs second and can add violations
  * but cannot override a deterministic rejection.
  */
 
@@ -13,7 +13,6 @@ import {
   ResearchState,
   ResearchPlan,
   AuditResult,
-  AuditVerdict,
   appendReasoning,
 } from "../state";
 
@@ -23,60 +22,11 @@ const MAX_HTTP_REQUESTS_PER_SESSION = 10;
 
 const VERDICT_REGEX = /"verdict"\s*:\s*"(approved|rejected|needs_revision)"/;
 
-// ─── Deterministic rule-based checks ─────────────────────────
+// ─── Deterministic structural checks ─────────────────────────
 
 interface RuleCheckResult {
   violations: string[];
   suggestions: string[];
-}
-
-/**
- * Content-safety patterns.  Queries that match are hard-rejected because
- * they seek specific methods, instructions, or detailed logistics of harm.
- * General research about statistics, prevention, or policy is allowed.
- */
-const HARMFUL_CONTENT_PATTERNS: { pattern: RegExp; reason: string }[] = [
-  {
-    pattern: /\b(?:method|way|how\s+to)\b.*\b(?:suicide|kill\s+(?:my|your|one)self|self[- ]?harm)\b/i,
-    reason: "Query seeks specific methods of self-harm (policy: research must not facilitate harm).",
-  },
-  {
-    pattern: /\b(?:suicide|kill\s+(?:my|your|one)self)\b.*\b(?:method|way|how\s+to|step[s ]?)\b/i,
-    reason: "Query seeks specific methods of self-harm (policy: research must not facilitate harm).",
-  },
-  {
-    pattern: /\b(?:how\s+to|method|way|guide|tutorial|instruction)\b.*\b(?:make|build|create|synthesize|manufacture)\b.*\b(?:bomb|explosive|weapon|poison|drug|narcotic)\b/i,
-    reason: "Query seeks instructions for creating dangerous materials (policy: research must not facilitate harm).",
-  },
-  {
-    pattern: /\b(?:bomb|explosive|weapon|poison)\b.*\b(?:how\s+to|method|way|guide|tutorial|instruction)\b.*\b(?:make|build|create)\b/i,
-    reason: "Query seeks instructions for creating dangerous materials (policy: research must not facilitate harm).",
-  },
-  {
-    pattern: /\b(?:how\s+to)\b.*\b(?:hack|exploit|breach|crack)\b.*\b(?:password|account|system|server|database)\b/i,
-    reason: "Query seeks unauthorized access instructions (policy: never access private data sources).",
-  },
-];
-
-function checkContentSafety(query: string, steps: ResearchPlan["steps"]): RuleCheckResult {
-  const violations: string[] = [];
-  const suggestions: string[] = [];
-
-  const textsToCheck = [query, ...steps.map((s) => s.input)];
-
-  for (const text of textsToCheck) {
-    for (const { pattern, reason } of HARMFUL_CONTENT_PATTERNS) {
-      if (pattern.test(text)) {
-        violations.push(reason);
-        suggestions.push(
-          "Rephrase the research objective to focus on prevention, statistics, public health policy, or academic analysis rather than seeking specific methods or instructions."
-        );
-        return { violations, suggestions };
-      }
-    }
-  }
-
-  return { violations, suggestions };
 }
 
 function checkPlanStructure(plan: ResearchPlan): RuleCheckResult {
@@ -104,21 +54,6 @@ function checkPlanStructure(plan: ResearchPlan): RuleCheckResult {
   }
 
   return { violations, suggestions };
-}
-
-/**
- * Runs all deterministic checks.  Returns combined violations + suggestions.
- */
-function deterministicAudit(
-  userQuery: string,
-  plan: ResearchPlan
-): RuleCheckResult {
-  const safety = checkContentSafety(userQuery, plan.steps);
-  const structure = checkPlanStructure(plan);
-  return {
-    violations: [...safety.violations, ...structure.violations],
-    suggestions: [...safety.suggestions, ...structure.suggestions],
-  };
 }
 
 // ─── LLM-based audit helpers ─────────────────────────────────
@@ -235,17 +170,12 @@ export async function auditorNode(
     throw new Error("auditorNode called with no plan in state");
   }
 
-  // Layer 1: deterministic rule checks (always reliable)
-  const ruleCheck = deterministicAudit(state.userQuery, state.plan);
+  // Layer 1: deterministic structural checks (always reliable)
+  const ruleCheck = checkPlanStructure(state.plan);
 
   if (ruleCheck.violations.length > 0) {
-    const verdict: AuditVerdict =
-      ruleCheck.violations.some((v) => v.includes("self-harm") || v.includes("dangerous materials") || v.includes("unauthorized access"))
-        ? "rejected"
-        : "needs_revision";
-
     const auditResult: AuditResult = {
-      verdict,
+      verdict: "needs_revision",
       policyViolations: ruleCheck.violations,
       suggestions: ruleCheck.suggestions,
       auditedAt: new Date().toISOString(),
