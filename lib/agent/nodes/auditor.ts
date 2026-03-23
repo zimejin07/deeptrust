@@ -34,9 +34,8 @@ function normalizeStringArray(value: unknown): string[] {
 }
 
 /**
- * Phrases that SmolLM2 copies verbatim from the system prompt example.
- * If all policyViolations/suggestions match these, the model had no real
- * objection — treat the verdict as "approved" to break the loop.
+ * Patterns that indicate the model parroted prompt examples or produced
+ * label-like nonsense instead of citing real policy rules.
  */
 const PLACEHOLDER_PATTERNS = [
   /^<cite\b/i,
@@ -46,8 +45,23 @@ const PLACEHOLDER_PATTERNS = [
   /how to rewrite or adjust/i,
 ];
 
-function isPlaceholderText(s: string): boolean {
-  return PLACEHOLDER_PATTERNS.some((p) => p.test(s.trim()));
+const VERDICT_VALUES = new Set(["approved", "rejected", "needs_revision"]);
+
+/**
+ * Returns true if the string is not a genuine policy citation — either
+ * a prompt placeholder, a verdict echoed as a violation, or a short
+ * label-like token that small models hallucinate.
+ */
+function isNonsenseViolation(s: string): boolean {
+  const trimmed = s.trim();
+  if (!trimmed) return true;
+  if (PLACEHOLDER_PATTERNS.some((p) => p.test(trimmed))) return true;
+  if (VERDICT_VALUES.has(trimmed.toLowerCase())) return true;
+  // Short strings without spaces are label-like tokens, not real policy citations
+  if (trimmed.length < 50 && !trimmed.includes(" ")) return true;
+  // Very short strings are never real citations
+  if (trimmed.length < 20) return true;
+  return false;
 }
 
 function parseAuditResult(parsed: unknown) {
@@ -56,7 +70,7 @@ function parseAuditResult(parsed: unknown) {
   const suggestions = normalizeStringArray(base.suggestions);
 
   const allPlaceholder =
-    violations.every(isPlaceholderText) && suggestions.every(isPlaceholderText);
+    violations.every(isNonsenseViolation) && suggestions.every(isNonsenseViolation);
 
   return AuditResult.safeParse({
     ...base,

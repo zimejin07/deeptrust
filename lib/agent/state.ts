@@ -183,22 +183,17 @@ export type ResearchState = z.infer<typeof ResearchState>;
 // Helpers
 // ─────────────────────────────────────────────────────────────
 
-const MAX_REASONING_ENTRIES = 20;
+export const MAX_REASONING_ENTRIES = 20;
 
-/** Append a reasoning entry, keeping only the most recent entries to prevent state bloat. */
+/**
+ * Create a single-element array with the new reasoning entry.
+ * The channel reducer in graph.ts handles concatenation and capping.
+ */
 export function appendReasoning(
-  state: ResearchState,
+  _state: ResearchState,
   entry: Omit<ReasoningEntry, "timestamp">
 ): ReasoningEntry[] {
-  const stamped: ReasoningEntry = {
-    ...entry,
-    timestamp: new Date().toISOString(),
-  };
-  const updated = [...state.reasoning, stamped];
-  if (updated.length > MAX_REASONING_ENTRIES) {
-    return updated.slice(updated.length - MAX_REASONING_ENTRIES);
-  }
-  return updated;
+  return [{ ...entry, timestamp: new Date().toISOString() }];
 }
 
 /** Returns a fresh, validated initial state for a new session. */

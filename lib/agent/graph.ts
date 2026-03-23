@@ -20,12 +20,13 @@
  * Every node writes to `state.reasoning` for full observability.
  */
 
-import { StateGraph, END, START, MemorySaver } from "@langchain/langgraph";
+import { StateGraph, END, START, MemorySaver, Command } from "@langchain/langgraph";
 import { v4 as uuidv4 } from "uuid";
 
 import {
   ResearchState,
   ReasoningEntry,
+  MAX_REASONING_ENTRIES,
   createInitialState,
 } from "./state";
 
@@ -72,8 +73,12 @@ export function buildDeepTrustGraph(
       humanApproved:    { value: (_, n) => n },
       finalReport:      { value: (_, n) => n },
       reasoning: {
-        value: (existing: ReasoningEntry[], incoming: ReasoningEntry[]) =>
-          [...(existing ?? []), ...(incoming ?? [])],
+        value: (existing: ReasoningEntry[], incoming: ReasoningEntry[]) => {
+          const merged = [...(existing ?? []), ...(incoming ?? [])];
+          return merged.length > MAX_REASONING_ENTRIES
+            ? merged.slice(merged.length - MAX_REASONING_ENTRIES)
+            : merged;
+        },
         default: () => [],
       },
       status:       { value: (_, n) => n },
@@ -195,17 +200,23 @@ export async function* runResearch(
 /**
  * Resume a paused session after human approval.
  *
- * The caller passes the threadId and streams the remaining events.
+ * Uses LangGraph's Command API to provide a resume value to the
+ * interrupt() call in hitlGateNode and update state in one step.
  */
 export async function* approveAndResume(
   threadId: string
 ): AsyncGenerator<{ node: string; state: Partial<ResearchState> }> {
   const config = { configurable: { thread_id: threadId } };
 
-  await deepTrustGraph.updateState(config, { humanApproved: true });
+  const resumeCommand = new Command({
+    resume: true,
+    update: { humanApproved: true } as Record<string, unknown>,
+  });
 
-  // Resume execution from the last checkpoint.
-  for await (const event of await deepTrustGraph.stream(null, config)) {
+  for await (const event of await deepTrustGraph.stream(resumeCommand as any, config)) {
+    if ("__interrupt__" in event) {
+      continue;
+    }
     for (const [node, state] of Object.entries(event)) {
       yield { node, state: state as Partial<ResearchState> };
     }
