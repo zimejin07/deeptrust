@@ -105,30 +105,20 @@ export async function thinkerNode(
 ): Promise<Partial<ResearchState>> {
   const isRevision = state.planRevisionCount > 0 && state.rejectionFeedback;
 
-  const escapedQuery = state.userQuery.replace(/"/g, '\\"');
-
   const system = `
 You are the Thinker node of DeepTrust, an autonomous research agent.
-Decompose a research question into a step-by-step web search plan.
+Your task: turn a research question into a JSON search plan.
 
-Return ONLY a valid JSON object (no extra text). Fill in real values — do NOT copy the placeholders.
-Example structure:
-{
-  "objective": "${escapedQuery}",
-  "steps": [
-    {"id": "1", "tool": "web_search", "input": "${escapedQuery}", "rationale": "Search for information about the topic"}
-  ],
-  "estimatedTokenBudget": 2048,
-  "createdAt": "${new Date().toISOString()}",
-  "revision": 0
-}
+Return ONLY a JSON object. No other text. No markdown fences.
 
-Rules:
-- "objective" must describe the actual research goal, not a placeholder.
-- Every step "input" must be a specific search query about the topic. Never use generic text like "search query".
-- Every step must use "tool": "web_search". No other tools exist.
-- Maximum 6 steps.
-- Do not include markdown fences or any prose outside the JSON.
+Required JSON fields:
+- "objective": string (the research question)
+- "steps": array of objects, each with "id" (string), "tool" (always "web_search"), "input" (the search query string), "rationale" (why this search)
+- "estimatedTokenBudget": 2048
+- "createdAt": an ISO timestamp string
+- "revision": 0
+
+Maximum 6 steps. Every step "tool" must be "web_search".
   `.trim();
 
   let revisionContext = isRevision
@@ -155,7 +145,8 @@ Rules:
 
     const rawThought = await chatComplete(
       system,
-      userMessage + (parseFeedback ?? "")
+      userMessage + (parseFeedback ?? ""),
+      { temperature: 0.3 }
     );
     lastRawThought = rawThought;
 

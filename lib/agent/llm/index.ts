@@ -10,10 +10,10 @@ import { Worker } from "node:worker_threads";
 import path from "node:path";
 import fs from "node:fs";
 
-import type { ModelOption, ModelProgress } from "./pipeline";
+import type { ModelOption, ModelProgress, ChatOptions } from "./pipeline";
 
 // Static list for API responses; worker also returns models in getStatus/load payloads
-export type { ModelOption, ModelProgress };
+export type { ModelOption, ModelProgress, ChatOptions };
 export const MODEL_ID =
   process.env.HF_MODEL || "HuggingFaceTB/SmolLM2-135M-Instruct";
 
@@ -116,6 +116,6 @@ export function loadModel(
   return send<ModelStatusResponse>("load", { modelId, dtype }, onProgress);
 }
 
-export async function chatComplete(systemPrompt: string, userMessage: string): Promise<string> {
-  return send<string>("chat", { systemPrompt, userMessage });
+export async function chatComplete(systemPrompt: string, userMessage: string, options?: ChatOptions): Promise<string> {
+  return send<string>("chat", { systemPrompt, userMessage, options });
 }

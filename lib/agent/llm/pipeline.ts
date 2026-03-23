@@ -206,11 +206,20 @@ export function loadModel(
   return generatorPromise;
 }
 
+export interface ChatOptions {
+  temperature?: number;
+  max_new_tokens?: number;
+}
+
 export async function chatComplete(
   systemPrompt: string,
-  userMessage: string
+  userMessage: string,
+  options?: ChatOptions
 ): Promise<string> {
   const generator = await loadModel();
+
+  const temperature = options?.temperature ?? 0.7;
+  const max_new_tokens = options?.max_new_tokens ?? 1024;
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -222,9 +231,9 @@ export async function chatComplete(
   const startTime = Date.now();
 
   const output = await generator(messages, {
-    max_new_tokens: 1024,
-    do_sample: true,
-    temperature: 0.7,
+    max_new_tokens,
+    do_sample: temperature > 0,
+    temperature,
   });
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

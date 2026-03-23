@@ -10,12 +10,13 @@ import {
   MODELS,
   type ModelProgress,
   type ModelOption,
+  type ChatOptions,
 } from "./pipeline";
 
 type Incoming =
   | { id: string; type: "getStatus"; payload: { modelId?: string; dtype?: string } }
   | { id: string; type: "load"; payload: { modelId?: string; dtype?: ModelOption["dtype"] } }
-  | { id: string; type: "chat"; payload: { systemPrompt: string; userMessage: string } };
+  | { id: string; type: "chat"; payload: { systemPrompt: string; userMessage: string; options?: ChatOptions } };
 
 type Outgoing =
   | { id: string; type: "resolve"; payload: unknown }
@@ -50,7 +51,7 @@ parentPort?.on("message", (msg: Incoming) => {
           break;
         }
         case "chat": {
-          const text = await chatComplete(payload.systemPrompt, payload.userMessage);
+          const text = await chatComplete(payload.systemPrompt, payload.userMessage, payload.options);
           reply({ id, type: "resolve", payload: text });
           break;
         }

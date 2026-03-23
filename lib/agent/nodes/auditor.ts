@@ -1,18 +1,128 @@
 /**
  * Auditor Node — validates plans against organizational policy
+ *
+ * Two-layer audit: deterministic rule checks run first (step count, request
+ * budget, content safety) so the gate works even when the LLM is too small
+ * to reason about policy.  The LLM audit runs second and can add violations
+ * but cannot override a deterministic rejection.
  */
 
 import { chatComplete } from "../llm";
 import { extractJSON, loadPolicy } from "../utils";
-import { ResearchState, AuditResult, appendReasoning } from "../state";
+import {
+  ResearchState,
+  ResearchPlan,
+  AuditResult,
+  AuditVerdict,
+  appendReasoning,
+} from "../state";
 
 const MAX_AUDITOR_ATTEMPTS = 3;
+const MAX_STEPS_PER_PLAN = 6;
+const MAX_HTTP_REQUESTS_PER_SESSION = 10;
 
 const VERDICT_REGEX = /"verdict"\s*:\s*"(approved|rejected|needs_revision)"/;
 
+// ─── Deterministic rule-based checks ─────────────────────────
+
+interface RuleCheckResult {
+  violations: string[];
+  suggestions: string[];
+}
+
 /**
- * Format Zod errors for inclusion in the next prompt so the LLM can self-correct.
+ * Content-safety patterns.  Queries that match are hard-rejected because
+ * they seek specific methods, instructions, or detailed logistics of harm.
+ * General research about statistics, prevention, or policy is allowed.
  */
+const HARMFUL_CONTENT_PATTERNS: { pattern: RegExp; reason: string }[] = [
+  {
+    pattern: /\b(?:method|way|how\s+to)\b.*\b(?:suicide|kill\s+(?:my|your|one)self|self[- ]?harm)\b/i,
+    reason: "Query seeks specific methods of self-harm (policy: research must not facilitate harm).",
+  },
+  {
+    pattern: /\b(?:suicide|kill\s+(?:my|your|one)self)\b.*\b(?:method|way|how\s+to|step[s ]?)\b/i,
+    reason: "Query seeks specific methods of self-harm (policy: research must not facilitate harm).",
+  },
+  {
+    pattern: /\b(?:how\s+to|method|way|guide|tutorial|instruction)\b.*\b(?:make|build|create|synthesize|manufacture)\b.*\b(?:bomb|explosive|weapon|poison|drug|narcotic)\b/i,
+    reason: "Query seeks instructions for creating dangerous materials (policy: research must not facilitate harm).",
+  },
+  {
+    pattern: /\b(?:bomb|explosive|weapon|poison)\b.*\b(?:how\s+to|method|way|guide|tutorial|instruction)\b.*\b(?:make|build|create)\b/i,
+    reason: "Query seeks instructions for creating dangerous materials (policy: research must not facilitate harm).",
+  },
+  {
+    pattern: /\b(?:how\s+to)\b.*\b(?:hack|exploit|breach|crack)\b.*\b(?:password|account|system|server|database)\b/i,
+    reason: "Query seeks unauthorized access instructions (policy: never access private data sources).",
+  },
+];
+
+function checkContentSafety(query: string, steps: ResearchPlan["steps"]): RuleCheckResult {
+  const violations: string[] = [];
+  const suggestions: string[] = [];
+
+  const textsToCheck = [query, ...steps.map((s) => s.input)];
+
+  for (const text of textsToCheck) {
+    for (const { pattern, reason } of HARMFUL_CONTENT_PATTERNS) {
+      if (pattern.test(text)) {
+        violations.push(reason);
+        suggestions.push(
+          "Rephrase the research objective to focus on prevention, statistics, public health policy, or academic analysis rather than seeking specific methods or instructions."
+        );
+        return { violations, suggestions };
+      }
+    }
+  }
+
+  return { violations, suggestions };
+}
+
+function checkPlanStructure(plan: ResearchPlan): RuleCheckResult {
+  const violations: string[] = [];
+  const suggestions: string[] = [];
+
+  if (plan.steps.length > MAX_STEPS_PER_PLAN) {
+    violations.push(
+      `Plan has ${plan.steps.length} steps, exceeding the maximum of ${MAX_STEPS_PER_PLAN}.`
+    );
+    suggestions.push(`Reduce the plan to at most ${MAX_STEPS_PER_PLAN} steps.`);
+  }
+
+  if (plan.steps.length > MAX_HTTP_REQUESTS_PER_SESSION) {
+    violations.push(
+      `Plan would make ${plan.steps.length} HTTP requests, exceeding the session limit of ${MAX_HTTP_REQUESTS_PER_SESSION} (policy: "Never make more than 10 external HTTP requests per session").`
+    );
+    suggestions.push(`Reduce to at most ${MAX_HTTP_REQUESTS_PER_SESSION} steps.`);
+  }
+
+  const emptyInputs = plan.steps.filter((s) => !s.input.trim());
+  if (emptyInputs.length > 0) {
+    violations.push(`${emptyInputs.length} step(s) have empty search inputs.`);
+    suggestions.push("Provide a specific search query for every step.");
+  }
+
+  return { violations, suggestions };
+}
+
+/**
+ * Runs all deterministic checks.  Returns combined violations + suggestions.
+ */
+function deterministicAudit(
+  userQuery: string,
+  plan: ResearchPlan
+): RuleCheckResult {
+  const safety = checkContentSafety(userQuery, plan.steps);
+  const structure = checkPlanStructure(plan);
+  return {
+    violations: [...safety.violations, ...structure.violations],
+    suggestions: [...safety.suggestions, ...structure.suggestions],
+  };
+}
+
+// ─── LLM-based audit helpers ─────────────────────────────────
+
 function formatZodErrors(issues: { path: unknown[]; message: string }[]): string {
   return issues
     .map((i) => `  - ${i.path.map((p) => String(p)).join(".")}: ${i.message}`)
@@ -33,59 +143,74 @@ function normalizeStringArray(value: unknown): string[] {
   });
 }
 
-/**
- * Patterns that indicate the model parroted prompt examples or produced
- * label-like nonsense instead of citing real policy rules.
- */
 const PLACEHOLDER_PATTERNS = [
   /^<cite\b/i,
   /^<one concrete\b/i,
+  /^<one specific\b/i,
   /policy section.*rule that is violated/i,
   /rewrite or adjust the plan to comply/i,
   /how to rewrite or adjust/i,
   /^#?DeepTrust/i,
   /^#?Default Policy/i,
+  /POLYNICELYP/i,
 ];
 
 const VERDICT_VALUES = new Set(["approved", "rejected", "needs_revision"]);
 
-/**
- * Returns true if the string is not a genuine policy citation — either
- * a prompt placeholder, a verdict echoed as a violation, or a short
- * label-like token that small models hallucinate.
- */
 function isNonsenseViolation(s: string): boolean {
   const trimmed = s.trim();
   if (!trimmed) return true;
   if (PLACEHOLDER_PATTERNS.some((p) => p.test(trimmed))) return true;
   if (VERDICT_VALUES.has(trimmed.toLowerCase())) return true;
-  // Short strings without spaces are label-like tokens, not real policy citations
   if (trimmed.length < 50 && !trimmed.includes(" ")) return true;
-  // Very short strings are never real citations
   if (trimmed.length < 20) return true;
   return false;
 }
 
-function parseAuditResult(parsed: unknown) {
+/**
+ * Detect repetition-loop output from small models: if a short substring
+ * repeats 5+ times in the raw text, the output is degenerate.
+ */
+function isRepetitionLoop(text: string, minRepeats = 5): boolean {
+  if (text.length < 200) return false;
+  const sample = text.slice(0, 2000);
+  const lines = sample.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length < minRepeats) return false;
+  const freq = new Map<string, number>();
+  for (const line of lines) {
+    const key = line.slice(0, 80);
+    freq.set(key, (freq.get(key) ?? 0) + 1);
+  }
+  for (const count of freq.values()) {
+    if (count >= minRepeats) return true;
+  }
+  return false;
+}
+
+function parseAuditResult(parsed: unknown, rawThought: string) {
   const base = parsed as Record<string, unknown>;
   const violations = normalizeStringArray(base.policyViolations);
   const suggestions = normalizeStringArray(base.suggestions);
 
-  // Auto-approve when all violations are nonsense; suggestions are advisory and don't block.
   const allPlaceholder = violations.every(isNonsenseViolation);
+  const degenerate = isRepetitionLoop(rawThought);
 
-  return AuditResult.safeParse({
-    ...base,
-    verdict: allPlaceholder ? "approved" : base.verdict,
-    policyViolations: allPlaceholder ? [] : violations,
-    suggestions: allPlaceholder ? [] : suggestions,
-    auditedAt: new Date().toISOString(),
-  });
+  // When the LLM produced nonsense or degenerate output, treat as
+  // "LLM audit inconclusive" — deterministic checks will still apply.
+  const llmInconclusive = allPlaceholder || degenerate;
+
+  return {
+    zodResult: AuditResult.safeParse({
+      ...base,
+      verdict: llmInconclusive ? "approved" : base.verdict,
+      policyViolations: llmInconclusive ? [] : violations,
+      suggestions: llmInconclusive ? [] : suggestions,
+      auditedAt: new Date().toISOString(),
+    }),
+    llmInconclusive,
+  };
 }
 
-/**
- * Last resort when JSON and retries fail: recover verdict from a substring fragment.
- */
 function auditFromVerdictRegex(rawThought: string): AuditResult | null {
   const m = rawThought.match(VERDICT_REGEX);
   if (!m) return null;
@@ -101,12 +226,8 @@ function auditFromVerdictRegex(rawThought: string): AuditResult | null {
   return result.success ? result.data : null;
 }
 
-/**
- * Compares the current plan against POLICY.md.
- * Sets `auditResult` with verdict + structured feedback.
- * If rejected, also sets `rejectionFeedback` and increments
- * `planRevisionCount` so the router can loop back to thinker.
- */
+// ─── Main auditor node ───────────────────────────────────────
+
 export async function auditorNode(
   state: ResearchState
 ): Promise<Partial<ResearchState>> {
@@ -114,33 +235,43 @@ export async function auditorNode(
     throw new Error("auditorNode called with no plan in state");
   }
 
+  // Layer 1: deterministic rule checks (always reliable)
+  const ruleCheck = deterministicAudit(state.userQuery, state.plan);
+
+  if (ruleCheck.violations.length > 0) {
+    const verdict: AuditVerdict =
+      ruleCheck.violations.some((v) => v.includes("self-harm") || v.includes("dangerous materials") || v.includes("unauthorized access"))
+        ? "rejected"
+        : "needs_revision";
+
+    const auditResult: AuditResult = {
+      verdict,
+      policyViolations: ruleCheck.violations,
+      suggestions: ruleCheck.suggestions,
+      auditedAt: new Date().toISOString(),
+    };
+
+    return buildAuditorState(
+      state,
+      auditResult,
+      `[Deterministic audit] ${ruleCheck.violations.join("; ")}`,
+      false
+    );
+  }
+
+  // Layer 2: LLM-based audit (best-effort with small models)
   const policy = loadPolicy();
 
   const system = `
 You are the Auditor node of DeepTrust.
 You evaluate research plans against an organisational policy and return a structured verdict.
 
-Return ONLY a valid JSON object. Use real content from POLICY above — do NOT copy placeholder text.
-Example shape (placeholders must be replaced with real strings from the policy and plan):
-{
-  "verdict": "needs_revision",
-  "policyViolations": ["<cite specific POLICY.md section or rule>"],
-  "suggestions": ["<one concrete plan change>"],
-  "auditedAt": "2025-01-01T00:00:00.000Z"
-}
+Return ONLY a valid JSON object (no other text). Example:
+{"verdict":"approved","policyViolations":[],"suggestions":[],"auditedAt":"${new Date().toISOString()}"}
 
-Field rules:
-- "verdict" must be one of: "approved", "rejected", "needs_revision".
-- "policyViolations" is an array of human-readable strings that reference specific policy rules.
-- "suggestions" is an array of concrete rewrite suggestions for making the plan compliant.
-- "auditedAt" must be an ISO 8601 timestamp string.
-
-Global rules:
-- "approved" means the plan fully complies with policy.
-- "rejected" means the plan has hard violations that cannot be patched.
-- "needs_revision" means soft issues exist but the plan is salvageable.
-- Treat "needs_revision" as rejection for routing purposes.
-- Do not include markdown fences or any prose outside the JSON object.
+Verdict values: "approved", "rejected", "needs_revision".
+If the plan complies with all policy rules, use "approved" with empty arrays.
+Do not include markdown fences or any prose outside the JSON object.
   `.trim();
 
   const userMessageBase = `
@@ -153,6 +284,7 @@ ${JSON.stringify(state.plan, null, 2)}
 
   let lastRawThought = "";
   let lastParseError: string | null = null;
+  let wasLlmInconclusive = false;
 
   for (let attempt = 1; attempt <= MAX_AUDITOR_ATTEMPTS; attempt++) {
     const parseFeedback =
@@ -161,7 +293,8 @@ ${JSON.stringify(state.plan, null, 2)}
 
     const rawThought = await chatComplete(
       system,
-      userMessageBase + (parseFeedback ?? "")
+      userMessageBase + (parseFeedback ?? ""),
+      { temperature: 0.3 }
     );
     lastRawThought = rawThought;
 
@@ -173,9 +306,10 @@ ${JSON.stringify(state.plan, null, 2)}
       continue;
     }
 
-    const zodResult = parseAuditResult(parsed);
+    const { zodResult, llmInconclusive } = parseAuditResult(parsed, rawThought);
+    wasLlmInconclusive = llmInconclusive;
     if (zodResult.success) {
-      return buildAuditorState(state, zodResult.data, rawThought);
+      return buildAuditorState(state, zodResult.data, rawThought, llmInconclusive);
     }
 
     lastParseError = formatZodErrors(zodResult.error.issues);
@@ -183,19 +317,30 @@ ${JSON.stringify(state.plan, null, 2)}
 
   const regexAudit = auditFromVerdictRegex(lastRawThought);
   if (regexAudit) {
-    return buildAuditorState(state, regexAudit, lastRawThought);
+    return buildAuditorState(state, regexAudit, lastRawThought, true);
   }
 
-  throw new Error(
-    `Auditor failed after ${MAX_AUDITOR_ATTEMPTS} attempts. The model did not return valid JSON matching the audit schema. ` +
-      `Try a larger model or lower sampling temperature. Last output (excerpt): ${lastRawThought.slice(0, 400)}`
+  // All LLM attempts failed but deterministic checks passed — auto-approve
+  // with a clear note that the LLM audit was inconclusive.
+  const fallbackResult: AuditResult = {
+    verdict: "approved",
+    policyViolations: [],
+    suggestions: [],
+    auditedAt: new Date().toISOString(),
+  };
+  return buildAuditorState(
+    state,
+    fallbackResult,
+    `[LLM audit failed after ${MAX_AUDITOR_ATTEMPTS} attempts; approved by deterministic checks only] ${lastRawThought.slice(0, 300)}`,
+    true
   );
 }
 
 function buildAuditorState(
   state: ResearchState,
   auditResult: AuditResult,
-  rawThought: string
+  rawThought: string,
+  llmInconclusive: boolean
 ): Partial<ResearchState> {
   const isRejected = auditResult.verdict !== "approved";
 
@@ -213,11 +358,18 @@ function buildAuditorState(
         .join("\n\n")
     : null;
 
+  let summary: string;
+  if (isRejected) {
+    summary = `Plan REJECTED (${auditResult.verdict}). ${auditResult.policyViolations.length} violation(s) found.`;
+  } else if (llmInconclusive) {
+    summary = "Plan APPROVED (deterministic checks only — LLM audit was inconclusive).";
+  } else {
+    summary = "Plan APPROVED — no policy violations detected.";
+  }
+
   const reasoning = appendReasoning(state, {
     node: "auditor",
-    summary: isRejected
-      ? `Plan REJECTED (${auditResult.verdict}). ${auditResult.policyViolations.length} violation(s) found.`
-      : "Plan APPROVED — no policy violations detected.",
+    summary,
     rawThought,
   });
 
