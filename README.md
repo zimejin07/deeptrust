@@ -37,6 +37,7 @@ A TypeScript implementation of an autonomous research agent: LangGraph state mac
 9. [Frontend: Real-Time Workspace](#frontend-real-time-workspace)
 10. [Running the Project](#running-the-project)
 11. [Configuration](#configuration)
+12. [FAQ: Architecture & design choices](#faq-architecture--design-choices)
 
 ---
 
@@ -62,7 +63,7 @@ DeepTrust implements a cyclic state graph where a research query flows through m
 - **Thinker**: Decomposes a research question into a structured, multi-step plan
 - **Auditor**: Validates the plan against organizational policy; rejects non-compliant plans
 - **HITL Gate**: Pauses execution for human approval before tool execution
-- **Tool Executor**: Executes each plan step sequentially (web search, document fetch, etc.)
+- **Tool Executor**: Executes each plan step sequentially (currently `web_search`; see [FAQ](#faq-architecture--design-choices))
 - **Synthesizer**: Aggregates tool outputs into a final research report
 
 The graph supports revision loops: if the Auditor rejects a plan, control returns to the Thinker with structured feedback. A configurable ceiling (`maxPlanRevisions`) prevents infinite loops.
@@ -662,10 +663,73 @@ These fields make it easier to filter and group traces in LangSmith.
 
 1. **State Machines for Agents**: Using LangGraph to model complex, cyclic agent workflows
 2. **Type-Safe State**: Zod schemas with TypeScript inference for runtime validation
-3. **Local LLM Inference**: Running models in-process without external API dependencies
+3. **Local LLM Inference**: Running models in a **worker thread** (not on the HTTP event loop) without cloud LLM APIs
 4. **Streaming Responses**: Server-Sent Events and ReadableStream for real-time updates
 5. **Human-in-the-Loop**: Checkpoint interrupts for manual approval gates
 6. **Revision Loops**: Cyclic graph edges for iterative refinement with safety ceilings
+
+---
+
+## FAQ: Architecture & design choices
+
+These answers are aimed at engineers reviewing the system end-to-end: how responsibilities are split, where state lives, and why the stack looks the way it does.
+
+### Why Next.js for this project?
+
+Next.js gives a **single TypeScript codebase** with a clear split between UI and server logic without introducing a separate BFF service. The **App Router** route handlers (`app/api/...`) are natural places for long-lived **Server-Sent Events (SSE)** streams: the research and model-load endpoints return `ReadableStream` bodies and push typed events to the client. That matches how we want the workspace to feel—incremental updates, no second HTTP framework to deploy. Next also aligns with **Hugging Face Spaces** and container-style hosts (Dockerfile): one Node process serves the UI and APIs, which simplifies ops compared to a static SPA plus a standalone API server.
+
+### How is the “agent” separated from the web app?
+
+**`lib/agent/`** is the domain layer: LangGraph construction (`graph.ts`), Zod state (`state.ts`), routing functions, node implementations, LLM facades, and utilities. **`app/`** owns HTTP boundaries (`app/api/**/route.ts`), the SSE wire format, and the React workspace (`app/page.tsx`). The dependency rule is one-way: **application code imports the agent; the agent never imports React, Next.js, or route handlers.** That keeps orchestration **portable**—the same `runResearch` / `approveAndResume` entry points could be invoked from a script, a different framework, or a job runner without pulling UI code along.
+
+Concretely:
+
+- **`lib/agent/index.ts`** is the narrow public seam: graph helpers, Zod types, `chatComplete` / model helpers, and utilities. Everything else under `lib/agent/` is internal to the agent package.
+- **Nodes** (`thinker`, `auditor`, `synthesizer`) only depend on `chatComplete`, state schemas, and helpers—they do not know whether the caller is an API route or a test harness.
+- **Side-effecting work** (policy file read, `fetch` for web search) lives in nodes and tools, not in `app/`, so policy and tool behavior stay centralized.
+- **Route handlers** stay thin: validate input, build options, iterate async generators from the graph, and encode events as SSE. No business rules in the route.
+
+Net effect: the **graph and prompts are the product’s brain**; Next.js is a **host** for I/O and rendering, not a place where control flow leaks.
+
+### Why LangGraph instead of a hand-rolled loop?
+
+Research here is inherently **cyclic** (thinker ↔ auditor revisions, tool steps, HITL). LangGraph provides an explicit **StateGraph**, **checkpointing** keyed by `thread_id`, and first-class **interrupt/resume** for human approval. Conditional edges encode policy (“approved → HITL”, “rejected → thinker”) in one place instead of scattering `if` chains across services. We still treat LLM outputs as untrusted: Zod validation, JSON extraction helpers, and retry/feedback loops live in nodes—LangGraph carries the **control flow**, not business shortcuts.
+
+### How is core state handled?
+
+There is **one canonical state shape** (`ResearchState` in `state.ts`), validated with **Zod** at creation and when parsing LLM-derived structures. LangGraph **channels** define merge semantics: scalars are last-write-wins; `reasoning` is append-only with a **bounded tail** so traces stay useful without unbounded memory growth. Serialized checkpoints must be JSON-safe, which drives field choices (ISO strings, plain objects). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for channel details and SSE payloads.
+
+### Why run the LLM in a worker thread?
+
+Local inference via `@huggingface/transformers` is **CPU/GPU-heavy** and would **block the Node event loop** on the main thread during load and generation—unacceptable for a server that must accept new HTTP connections and **stream SSE** for research and model progress.
+
+**What we built:**
+
+1. **Dedicated worker bundle** — `tsconfig.worker.json` compiles only `lib/agent/llm/pipeline.ts` and `worker-entry.ts` to **`dist/llm/`**. The heavy Transformers pipeline is not bundled into the Next server chunk; you run **`npm run build:worker`** (or full `npm run build`) before first use. The main thread loads **`dist/llm/worker-entry.js`** via `new Worker(workerPath)`.
+
+2. **Singleton worker + async RPC** — `lib/agent/llm/index.ts` spawns **one** `Worker`, lazily on first request. The main thread sends `{ id, type, payload }` messages (`getStatus`, `load`, `chat`); the worker replies with `resolve` / `reject` or **interleaved `progress`** during model download/load. A **`pending` `Map`** correlates `id` to Promise resolvers so concurrent API calls (e.g. model status + a chat from different requests) do not trample each other.
+
+3. **Stable surface for the agent** — Nodes call **`chatComplete(system, user)`** and **`loadModel`** without knowing about threads. Swapping the implementation later (remote API, different runtime) means changing **`llm/index.ts`** and the worker contract, not every node.
+
+4. **Operational visibility** — the worker is created with `stdout`/`stderr` piped through, which helps when debugging downloads and crashes on **Hugging Face Spaces** or Docker.
+
+So the split is not cosmetic: it is **event-loop isolation** plus a **minimal RPC boundary** between “web server” and “inference engine,” which is the same architectural move you would make for image processing or any other long-running native work beside Express/Next.
+
+### Why SSE for the workspace instead of WebSockets?
+
+The client mostly needs **server → browser** push (research events, model progress, errors). **SSE** over a normal HTTP POST/GET response is simpler than WebSockets for that shape: standard proxies understand it, reconnect semantics are straightforward, and route handlers stay a single request lifecycle. Bidirectional chat beyond “approve this plan” is not required for the core loop; the approve path is a second POST with its own stream.
+
+### How are human-in-the-loop and resume implemented?
+
+After an approved audit, **`hitl_gate`** calls LangGraph’s **`interrupt()`**, which checkpoints and pauses until the graph is resumed with a **`Command`** carrying a `resume` value and state updates (e.g. `humanApproved: true`). The UI stores `threadId` from the `hitl_waiting` event; **`POST /api/research/approve`** streams again from that checkpoint. Using `Command` is important: a bare `stream(null)` without a resume value does not satisfy `interrupt()` and the run would stall.
+
+### How do policy, auditor, and tools relate?
+
+**Policy** (`POLICY.md` / default text) is the rule set; the **Auditor** node prompts the LLM to emit structured verdicts. Small models often parrot placeholders or noise, so the codebase includes **normalization and guardrails** (e.g. treating obvious nonsense violations as non-blocking) to keep the product usable—this is a pragmatic layer on top of “ideal” policy enforcement. **Tools** execute only after HITL approval; **`web_search`** runs on the server with optional Google CSE env vars and a DuckDuckGo default, keeping secrets out of the client.
+
+### What is intentionally out of scope or “phase 2”?
+
+Persistent checkpoints beyond **in-memory** `MemorySaver` (e.g. Postgres), additional tools (`document_fetch`, code execution), and parallel step execution are documented as extensions in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The current architecture is optimized for **clarity, local inference, and a single deployable** rather than maximum throughput.
 
 ---
 
