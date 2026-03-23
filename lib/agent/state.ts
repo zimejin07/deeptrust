@@ -49,7 +49,7 @@ export type RunStatus = z.infer<typeof RunStatus>;
  */
 export const ResearchStep = z.object({
   id: z.string().uuid(),
-  tool: z.enum(["web_search", "document_fetch", "code_interpreter", "summarize"]),
+  tool: z.enum(["web_search"]),
   input: z.string().min(1),
   rationale: z.string(),
   /** Populated by the Tool Executor after the step runs. */
@@ -64,7 +64,7 @@ export type ResearchStep = z.infer<typeof ResearchStep>;
  */
 export const ResearchPlan = z.object({
   objective: z.string().min(1),
-  steps: z.array(ResearchStep).min(1).max(20),
+  steps: z.array(ResearchStep).min(1).max(6),
   estimatedTokenBudget: z.number().int().positive(),
   createdAt: z.string().datetime(),
   revision: z.number().int().nonnegative().default(0),
@@ -183,7 +183,9 @@ export type ResearchState = z.infer<typeof ResearchState>;
 // Helpers
 // ─────────────────────────────────────────────────────────────
 
-/** Append a reasoning entry without mutating the caller's reference. */
+const MAX_REASONING_ENTRIES = 20;
+
+/** Append a reasoning entry, keeping only the most recent entries to prevent state bloat. */
 export function appendReasoning(
   state: ResearchState,
   entry: Omit<ReasoningEntry, "timestamp">
@@ -192,7 +194,11 @@ export function appendReasoning(
     ...entry,
     timestamp: new Date().toISOString(),
   };
-  return [...state.reasoning, stamped];
+  const updated = [...state.reasoning, stamped];
+  if (updated.length > MAX_REASONING_ENTRIES) {
+    return updated.slice(updated.length - MAX_REASONING_ENTRIES);
+  }
+  return updated;
 }
 
 /** Returns a fresh, validated initial state for a new session. */

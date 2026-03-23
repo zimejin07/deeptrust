@@ -8,9 +8,6 @@ import { ResearchState, ResearchPlan, ResearchStep, appendReasoning } from "../s
  * Executes one step at a time (the step at `currentStepIndex`).
  * After each execution the graph loops back through the router;
  * when all steps are complete it advances to synthesizer.
- *
- * Real tool integrations (Tavily, Playwright, etc.) replace the
- * stub `dispatchTool` function.
  */
 export async function toolExecutorNode(
   state: ResearchState
@@ -20,10 +17,8 @@ export async function toolExecutorNode(
   const step = state.plan.steps[state.currentStepIndex];
   if (!step) throw new Error(`No step at index ${state.currentStepIndex}`);
 
-  // Dispatch the tool
   const output = await dispatchTool(step.tool, step.input);
 
-  // Persist the output back into the plan's steps array immutably
   const updatedSteps = state.plan.steps.map((s, i) =>
     i === state.currentStepIndex
       ? { ...s, output, executedAt: new Date().toISOString() }
@@ -50,30 +45,17 @@ export async function toolExecutorNode(
   };
 }
 
-/**
- * Dispatch a tool call. Replace stubs with real implementations.
- */
 async function dispatchTool(
   tool: ResearchStep["tool"],
   input: string
 ): Promise<string> {
   switch (tool) {
     case "web_search":
-      // e.g. return await tavilySearch(input);
+      // TODO: replace with real search (e.g. Tavily, SearXNG)
       return `[STUB] web_search result for: "${input}"`;
-    case "document_fetch":
-      // e.g. return await fetchDocument(input);
-      return `[STUB] document_fetch result for: "${input}"`;
-    case "code_interpreter":
-      // e.g. return await runSandboxedCode(input);
-      return `[STUB] code_interpreter result for: "${input}"`;
-    case "summarize":
-      // e.g. return await summarizeText(input);
-      return `[STUB] summarize result for: "${input}"`;
     default: {
-      const exhaustiveCheck: never = tool;
-      throw new Error(`Unknown tool: ${exhaustiveCheck}`);
+      const _exhaustive: never = tool;
+      throw new Error(`Unknown tool: ${_exhaustive}`);
     }
   }
 }
-

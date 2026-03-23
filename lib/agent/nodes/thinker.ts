@@ -12,6 +12,25 @@ import { ResearchState, ResearchPlan, appendReasoning } from "../state";
 import { v4 as uuidv4 } from "uuid";
 
 const MAX_PLAN_ATTEMPTS = 3;
+/** Cap retry feedback so small models do not echo nested "Could not parse..." chains forever. */
+const MAX_PARSE_FEEDBACK_LEN = 1200;
+
+/**
+ * Shorten and de-duplicate nested JSON parse error text before the next LLM turn.
+ */
+function sanitizeParseFeedback(text: string): string {
+  let s = text;
+  while (
+    s.includes("Could not parse as JSON. Output started with: Could not parse as JSON. Output started with:")
+  ) {
+    s = s.replace(
+      /Could not parse as JSON\. Output started with: Could not parse as JSON\. Output started with: /g,
+      "Could not parse as JSON. Output started with: "
+    );
+  }
+  if (s.length <= MAX_PARSE_FEEDBACK_LEN) return s;
+  return `${s.slice(0, MAX_PARSE_FEEDBACK_LEN)}\n…(truncated)`;
+}
 
 /**
  * Format Zod errors for inclusion in the next prompt so the LLM can self-correct.
@@ -46,7 +65,7 @@ function normalizePlan(raw: Record<string, unknown>): Record<string, unknown> {
       id,
       rationale,
       input: typeof step.input === "string" ? step.input : "",
-      tool: step.tool ?? "web_search",
+      tool: "web_search",
     };
   });
 
@@ -88,26 +107,24 @@ export async function thinkerNode(
 
   const system = `
 You are the Thinker node of DeepTrust, an autonomous research agent.
-Your sole job is to decompose a research question into a concrete, step-by-step plan.
+Decompose a research question into a step-by-step web search plan.
 
-Return ONLY a valid JSON object that matches this TypeScript type:
+Return ONLY a valid JSON object like this (no extra text):
 {
-  "objective": string,
-  "steps": Array<{
-    "id": string (UUID v4),
-    "tool": "web_search" | "document_fetch" | "code_interpreter" | "summarize",
-    "input": string,
-    "rationale": string
-  }>,
-  "estimatedTokenBudget": number,
-  "createdAt": string (ISO 8601),
-  "revision": number
+  "objective": "the research goal",
+  "steps": [
+    {"id": "1", "tool": "web_search", "input": "search query", "rationale": "why this search"}
+  ],
+  "estimatedTokenBudget": 2048,
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "revision": 0
 }
 
 Rules:
-- Maximum 20 steps.
-- Every step must have a clear rationale.
-- Do not include markdown fences or any prose outside the JSON object.
+- Every step must use "tool": "web_search". No other tools exist.
+- Each step "input" should be a specific search query, not a URL.
+- Maximum 6 steps.
+- Do not include markdown fences or any prose outside the JSON.
   `.trim();
 
   let revisionContext = isRevision
@@ -119,7 +136,7 @@ Rules:
     knowledgeBlock = `\n\nThe user provided the following retrieved context from their local knowledge base. Use it to inform the plan and prefer steps that leverage this context where relevant:\n\n${state.knowledgeContext}`;
   }
   if (state.contextUrls?.length) {
-    knowledgeBlock += `\n\nThe user also referenced these URLs (consider document_fetch steps for them where useful): ${state.contextUrls.join(", ")}`;
+    knowledgeBlock += `\n\nThe user also referenced these URLs: ${state.contextUrls.join(", ")}`;
   }
 
   let userMessage = `Research question: "${state.userQuery}"${revisionContext}${knowledgeBlock}`;
@@ -130,7 +147,7 @@ Rules:
   for (let attempt = 1; attempt <= MAX_PLAN_ATTEMPTS; attempt++) {
     const parseFeedback =
       lastParseError &&
-      `\n\nYour previous response had validation errors. Fix them and return ONLY valid JSON:\n${lastParseError}`;
+      `\n\nYour previous response had validation errors. Fix them and return ONLY valid JSON:\n${sanitizeParseFeedback(lastParseError)}`;
 
     const rawThought = await chatComplete(
       system,
@@ -142,7 +159,9 @@ Rules:
     try {
       parsed = extractJSON(rawThought);
     } catch {
-      lastParseError = `Could not parse as JSON. Output started with: ${rawThought.slice(0, 200)}`;
+      lastParseError = sanitizeParseFeedback(
+        `Could not parse as JSON. First 200 chars of model output:\n${rawThought.slice(0, 200)}`
+      );
       continue;
     }
 
@@ -174,7 +193,7 @@ Rules:
       };
     }
 
-    lastParseError = formatZodErrors(result.error.issues);
+    lastParseError = sanitizeParseFeedback(formatZodErrors(result.error.issues));
   }
 
   // Fallback: if the model failed to produce valid JSON after all attempts,
@@ -193,10 +212,7 @@ Rules:
           typeof state.userQuery === "string" && state.userQuery.trim().length > 0
             ? state.userQuery.trim()
             : "Initial research query",
-        rationale:
-          typeof lastRawThought === "string" && lastRawThought.trim().length > 0
-            ? lastRawThought.slice(0, 500)
-            : "Initial search to understand the question.",
+        rationale: "Initial search to gather information on the research question.",
       },
     ],
     estimatedTokenBudget: 2048,

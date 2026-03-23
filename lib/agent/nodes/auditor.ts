@@ -33,12 +33,36 @@ function normalizeStringArray(value: unknown): string[] {
   });
 }
 
+/**
+ * Phrases that SmolLM2 copies verbatim from the system prompt example.
+ * If all policyViolations/suggestions match these, the model had no real
+ * objection — treat the verdict as "approved" to break the loop.
+ */
+const PLACEHOLDER_PATTERNS = [
+  /^<cite\b/i,
+  /^<one concrete\b/i,
+  /policy section.*rule that is violated/i,
+  /rewrite or adjust the plan to comply/i,
+  /how to rewrite or adjust/i,
+];
+
+function isPlaceholderText(s: string): boolean {
+  return PLACEHOLDER_PATTERNS.some((p) => p.test(s.trim()));
+}
+
 function parseAuditResult(parsed: unknown) {
   const base = parsed as Record<string, unknown>;
+  const violations = normalizeStringArray(base.policyViolations);
+  const suggestions = normalizeStringArray(base.suggestions);
+
+  const allPlaceholder =
+    violations.every(isPlaceholderText) && suggestions.every(isPlaceholderText);
+
   return AuditResult.safeParse({
     ...base,
-    policyViolations: normalizeStringArray(base.policyViolations),
-    suggestions: normalizeStringArray(base.suggestions),
+    verdict: allPlaceholder ? "approved" : base.verdict,
+    policyViolations: allPlaceholder ? [] : violations,
+    suggestions: allPlaceholder ? [] : suggestions,
     auditedAt: new Date().toISOString(),
   });
 }
@@ -80,11 +104,12 @@ export async function auditorNode(
 You are the Auditor node of DeepTrust.
 You evaluate research plans against an organisational policy and return a structured verdict.
 
-Return ONLY a valid JSON object, for example:
+Return ONLY a valid JSON object. Use real content from POLICY above — do NOT copy placeholder text.
+Example shape (placeholders must be replaced with real strings from the policy and plan):
 {
   "verdict": "needs_revision",
-  "policyViolations": ["policy section / rule that is violated"],
-  "suggestions": ["how to rewrite or adjust the plan to comply"],
+  "policyViolations": ["<cite specific POLICY.md section or rule>"],
+  "suggestions": ["<one concrete plan change>"],
   "auditedAt": "2025-01-01T00:00:00.000Z"
 }
 
