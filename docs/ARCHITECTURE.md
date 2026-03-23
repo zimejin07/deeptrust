@@ -112,19 +112,25 @@ LangGraph channels define how incoming state updates merge with existing state:
 
 | Field | Strategy | Rationale |
 |-------|----------|-----------|
-| `reasoning` | Append | Accumulates full reasoning trace |
+| `reasoning` | Append + cap | Nodes pass **one** new entry per update; reducer concatenates and keeps the last 20 (`MAX_REASONING_ENTRIES` in `state.ts`) |
 | All others | Replace | Last-write-wins for scalar values |
 
 ```typescript
 channels: {
   reasoning: {
-    value: (existing, incoming) => [...(existing ?? []), ...(incoming ?? [])],
+    value: (existing, incoming) => {
+      const merged = [...(existing ?? []), ...(incoming ?? [])];
+      const cap = 20; // MAX_REASONING_ENTRIES in state.ts
+      return merged.length > cap ? merged.slice(merged.length - cap) : merged;
+    },
     default: () => [],
   },
   plan: { value: (_, n) => n },
   // ...
 }
 ```
+
+`appendReasoning` returns a **single-element** array so the reducer performs one append per node; this avoids duplicating the full history on every write.
 
 ## Data Schemas
 
@@ -136,7 +142,7 @@ All data structures use Zod for runtime validation. TypeScript types are inferre
 // Schema definition
 export const ResearchStep = z.object({
   id: z.string().uuid(),
-  tool: z.enum(["web_search", "document_fetch", "code_interpreter", "summarize"]),
+  tool: z.enum(["web_search"]),
   input: z.string().min(1),
   rationale: z.string(),
   output: z.string().optional(),
@@ -467,9 +473,12 @@ const config = { configurable: { thread_id: initialState.threadId } };
 // Stream with checkpointing
 for await (const event of graph.stream(initialState, config)) { ... }
 
-// Resume from checkpoint
-await graph.updateState(config, { humanApproved: true });
-for await (const event of graph.stream(null, config)) { ... }
+// Resume after HITL: pass a Command with `resume` so interrupt() in hitl_gate can proceed,
+// and set humanApproved in the same step
+for await (const event of graph.stream(
+  new Command({ resume: true, update: { humanApproved: true } }),
+  config
+)) { ... }
 ```
 
 ## Security Considerations
@@ -483,13 +492,11 @@ The Auditor node validates plans against `POLICY.md` before execution. Policy ru
 - Allowed tool types
 - Content guidelines
 
-### Tool Sandboxing
+### Tool execution
 
-Tool implementations (currently stubs) should sandbox external operations:
+- **`web_search`**: Fetches HTML results from DuckDuckGo by default (no API key). If `GOOGLE_CSE_API_KEY` and `GOOGLE_CSE_CX` are set, uses Google Custom Search JSON API instead. Timeouts and bounded result counts limit external HTTP usage.
 
-- Network requests: Rate limiting, allowlists
-- Code execution: Containerized environments
-- File access: Scoped to specific directories
+Further hardening (rate limits, allowlists) can be added as deployment needs grow.
 
 ### Input Validation
 
@@ -502,7 +509,7 @@ All state mutations pass through Zod schemas, preventing malformed data from pro
 ### Potential Enhancements
 
 1. **Persistent Checkpointing**: PostgreSQL or Redis for production state storage
-2. **Tool Implementations**: Real web search (Tavily), document fetch (Playwright), code execution
+2. **More tools**: Document fetch (e.g. Playwright), optional code execution, or alternate search backends (Tavily, SearXNG)
 3. **Multi-Model Support**: Router to select appropriate model per task complexity
 4. **Observability**: OpenTelemetry traces for node-level metrics
 5. **Parallel Tool Execution**: Execute independent steps concurrently

@@ -184,10 +184,13 @@ const graph = new StateGraph<ResearchState>({
     threadId: { value: (_, n) => n },
     // ... other scalar fields use (_, n) => n
 
-    // Append-only reasoning log
+    // Append-only reasoning log (nodes pass one new entry; cap matches state.ts)
     reasoning: {
-      value: (existing: ReasoningEntry[], incoming: ReasoningEntry[]) =>
-        [...(existing ?? []), ...(incoming ?? [])],
+      value: (existing: ReasoningEntry[], incoming: ReasoningEntry[]) => {
+        const merged = [...(existing ?? []), ...(incoming ?? [])];
+        const cap = 20;
+        return merged.length > cap ? merged.slice(merged.length - cap) : merged;
+      },
       default: () => [],
     },
   },
@@ -201,7 +204,7 @@ const graph = new StateGraph<ResearchState>({
 ```typescript
 export const ResearchStep = z.object({
   id: z.string().uuid(),
-  tool: z.enum(["web_search", "document_fetch", "code_interpreter", "summarize"]),
+  tool: z.enum(["web_search"]),
   input: z.string().min(1),
   rationale: z.string(),
   output: z.string().optional(),
@@ -499,8 +502,7 @@ for await (const event of runResearch(query, "Research Session", options)) {
 
 `POST /api/research/approve` resumes a paused run after human approval. The client sends `{ "threadId": string }` (obtained from the earlier `hitl_waiting` event), and the server:
 
-- Sets `humanApproved = true` for that thread.
-- Resumes the LangGraph stream from the last checkpoint.
+- Streams with LangGraph `Command({ resume: true, update: { humanApproved: true } })` so `interrupt()` in `hitl_gate` receives a resume value and state updates in one step.
 - Streams the remaining `{ node, state }` events as `event: research` SSE messages until completion or error.
 ```
 
@@ -616,13 +618,16 @@ The repo includes a **Dockerfile** and config for [Render](https://render.com). 
 
 ## Configuration
 
-Create `.env.local` from `.env.example`:
+Create `.env.local` from `.env.example` (copy the file and adjust values).
 
-```bash
-# Model selection
-HF_MODEL=HuggingFaceTB/SmolLM2-360M-Instruct
-HF_CACHE_DIR=./.hf-cache
-```
+### Web search (research agent)
+
+The plan step `web_search` runs in the tool executor. By default it queries **DuckDuckGo** over HTTPS (no API key). Optionally set **Google Custom Search** for programmatic web results:
+
+- `GOOGLE_CSE_API_KEY` — API key from Google Cloud (Custom Search API enabled)
+- `GOOGLE_CSE_CX` — Programmable Search Engine ID (cx)
+
+If both are set, Google is used; otherwise DuckDuckGo. See comments in `.env.example`.
 
 ### Observability (LangSmith)
 
