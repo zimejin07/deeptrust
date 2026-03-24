@@ -86,12 +86,27 @@ const DEFAULT_MODELS: ModelOption[] = [
   },
 ];
 
-const QUICK_ACTIONS = [
-  "Deep dive with sources",
-  "Use my uploaded docs",
-  "Compare both sides",
-  "Give me a summary",
-  "Fact-check this claim",
+const QUICK_ACTIONS: { label: string; query: string }[] = [
+  {
+    label: "Deep dive with sources",
+    query: "What caused the global chip shortage and how is it recovering?",
+  },
+  {
+    label: "Compare both sides",
+    query: "What are the arguments for and against a four-day work week?",
+  },
+  {
+    label: "Fact-check this",
+    query: "Is it true that we only use 10% of our brain?",
+  },
+  {
+    label: "Explain like I'm new",
+    query: "How does cryptocurrency mining actually work, in plain terms?",
+  },
+  {
+    label: "What's the latest on…",
+    query: "What is the current state of nuclear fusion energy research?",
+  },
 ];
 
 const PREVIEW_QUERIES = [
@@ -511,10 +526,12 @@ export default function DeepTrustWorkspace() {
     ]
   );
 
-  const handleQuickAction = (template: string) => {
-    const composed = query ? `${query}\n\n${template}` : template;
-    setQuery(composed);
-    void runResearch(composed);
+  const handleQuickAction = (action: { label: string; query: string }) => {
+    if (query.trim()) {
+      void runResearch();
+    } else {
+      setQuery(action.query);
+    }
   };
 
   const handleSubmit: React.FormEventHandler<HTMLFormElement> = (event) => {
@@ -728,20 +745,21 @@ export default function DeepTrustWorkspace() {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   disabled={isInputDisabled}
-                  placeholder="Ask DeepTrust anything about your code, docs, or ideas…"
+                  placeholder="What do you want to research? Type a question or click a chip below…"
                   className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-zinc-500 text-zinc-100"
                 />
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex flex-wrap gap-1.5">
                     {QUICK_ACTIONS.map((action) => (
                       <button
-                        key={action}
+                        key={action.label}
                         type="button"
                         disabled={isInputDisabled}
                         onClick={() => handleQuickAction(action)}
+                        title={query.trim() ? "Run your query" : action.query}
                         className="rounded-full border border-zinc-800 bg-zinc-900/70 px-3 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 hover:border-zinc-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        {action}
+                        {action.label}
                       </button>
                     ))}
                   </div>
