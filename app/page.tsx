@@ -87,17 +87,17 @@ const DEFAULT_MODELS: ModelOption[] = [
 ];
 
 const QUICK_ACTIONS = [
-  "Research with my local knowledge + cited web results",
-  "Plan searches first—I approve before tools run",
-  "Summarize what my uploaded materials say about a topic",
-  "Compare two claims with an auditable source trail",
-  "Explain what stays on-device vs. uses the network here",
+  "Deep dive with sources",
+  "Use my uploaded docs",
+  "Compare both sides",
+  "Give me a summary",
+  "Fact-check this claim",
 ];
 
 const PREVIEW_QUERIES = [
-  "How does local LLM inference reduce data sent to third parties?",
-  "Plan verifiable research on a technical topic with clear sources",
-  "What trade-offs exist between on-device models and cloud APIs?",
+  "Why is the cost of living rising faster than wages?",
+  "What are the real pros and cons of remote work in 2026?",
+  "How do noise-cancelling headphones actually work?",
 ];
 
 export default function DeepTrustWorkspace() {
@@ -197,6 +197,7 @@ export default function DeepTrustWorkspace() {
         }
         streamingTimerRef.current = null;
         pendingFullTextRef.current = null;
+        streamingTargetRef.current = null;
         setChat((prev) =>
           prev.map((m) =>
             m.id === messageId
@@ -207,6 +208,7 @@ export default function DeepTrustWorkspace() {
               : m
           )
         );
+        setIsStreaming(false);
       }
     }, 40);
 
@@ -354,7 +356,7 @@ export default function DeepTrustWorkspace() {
       .catch(() => {});
   };
 
-  const resetStreaming = () => {
+  const resetStreaming = useCallback(() => {
     if (streamAbortRef.current) {
       streamAbortRef.current.abort();
       streamAbortRef.current = null;
@@ -366,7 +368,7 @@ export default function DeepTrustWorkspace() {
     pendingFullTextRef.current = null;
     streamingTargetRef.current = null;
     setIsStreaming(false);
-  };
+  }, []);
 
   const runResearch = useCallback(
     async (promptOverride?: string) => {
@@ -487,7 +489,7 @@ export default function DeepTrustWorkspace() {
           }
         }
 
-        if (!hadError) {
+        if (!hadError && !streamingTimerRef.current) {
           setIsStreaming(false);
         }
       } catch (err) {

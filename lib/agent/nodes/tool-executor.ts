@@ -78,10 +78,18 @@ async function webSearch(query: string): Promise<string> {
   const apiKey = process.env.GOOGLE_CSE_API_KEY;
   const cx = process.env.GOOGLE_CSE_CX;
 
-  const results =
-    apiKey && cx
-      ? await googleCseSearch(query, apiKey, cx)
-      : await duckDuckGoSearch(query);
+  let results: SearchResult[] = [];
+
+  try {
+    results =
+      apiKey && cx
+        ? await googleCseSearch(query, apiKey, cx)
+        : await duckDuckGoSearch(query);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[web_search] Network error for "${query}": ${msg}`);
+    return `Search failed (network error): ${msg}`;
+  }
 
   if (results.length === 0) {
     return `No results found for: "${query}"`;
@@ -146,15 +154,17 @@ async function duckDuckGoSearch(query: string): Promise<SearchResult[]> {
     method: "POST",
     headers: {
       "User-Agent":
-        "Mozilla/5.0 (compatible; DeepTrust/1.0; +https://github.com/deeptrust)",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.5",
     },
     body: `q=${encodeURIComponent(query)}`,
     signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
   });
 
   if (!res.ok) {
-    console.error(`DuckDuckGo returned ${res.status}`);
+    console.error(`[web_search] DuckDuckGo returned HTTP ${res.status} for "${query}"`);
     return [];
   }
 
@@ -162,6 +172,13 @@ async function duckDuckGoSearch(query: string): Promise<SearchResult[]> {
 
   const results: SearchResult[] = [];
   const resultBlocks = html.split(/class="result\s/);
+
+  if (resultBlocks.length <= 1) {
+    console.warn(
+      `[web_search] DuckDuckGo returned HTML (${html.length} chars) but no result blocks for "${query}". ` +
+      `Possible captcha/block. First 300 chars: ${html.slice(0, 300).replace(/\n/g, " ")}`
+    );
+  }
 
   for (const block of resultBlocks.slice(1)) {
     if (results.length >= MAX_RESULTS) break;
